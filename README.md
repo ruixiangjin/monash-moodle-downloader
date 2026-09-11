@@ -56,11 +56,16 @@ The menu provides these choices:
 1. Incrementally update every current (not removed-from-view) course.
 2. Select one current or removed-from-view course, then update the entire course.
 3. Select one course, then enter one or more available Weeks such as `3`, `3-5`, or `3,7-8`.
+4. Select one course, then update only General content that sits outside all Week sections.
 
 The menu performs the same incremental sync as the command-line options. It does not automatically
 include removed-from-view courses in the “all current courses” operation. It reads each course's
 actual Week list before accepting a selection, supports Week 0 when present, and stays open after
 every operation until you explicitly choose `0 Exit` from the main menu.
+
+General can contain assessment information, assignments, course information, or other material that
+Moodle places outside the teaching Weeks. An assignment placed inside a Week remains part of that
+Week instead of General.
 
 ## Scan and synchronise
 

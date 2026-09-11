@@ -95,9 +95,15 @@ class CourseContentScanner:
         *,
         week: int | None = None,
         weeks: Iterable[int] | None = None,
+        general: bool = False,
     ) -> SyncManifest:
         """Scan course pages and return a manifest without downloading attachment bodies."""
-        selected = select_sections(course.sections, week=week, weeks=weeks)
+        selected = select_sections(
+            course.sections,
+            week=week,
+            weeks=weeks,
+            general=general,
+        )
         page_groups: dict[str, list[Section]] = defaultdict(list)
         for section in selected:
             page_groups[self._section_page_url(course, section)].append(section)
@@ -312,11 +318,23 @@ def select_sections(
     *,
     week: int | None = None,
     weeks: Iterable[int] | None = None,
+    general: bool = False,
 ) -> list[Section]:
-    """Select requested Week roots and their children, or all visible sections."""
-    if week is not None and weeks is not None:
-        raise ValueError("Choose either week or weeks, not both.")
+    """Select Weeks, non-Week General sections, or all visible sections."""
+    if sum((week is not None, weeks is not None, general)) > 1:
+        raise ValueError("Choose Weeks or General, not both.")
     visible = [section for section in sections if section.visible]
+    if general:
+        week_roots = [section for section in visible if week_number(section.title) is not None]
+        assigned_ids = {section.id for section in week_roots}
+        root_numbers = {section.number for section in week_roots}
+        assigned_ids.update(
+            section.id for section in visible if section.parent_number in root_numbers
+        )
+        return sorted(
+            (section for section in visible if section.id not in assigned_ids),
+            key=lambda section: (section.number, section.id),
+        )
     requested = set(weeks) if weeks is not None else ({week} if week is not None else None)
     if requested is None:
         return sorted(visible, key=lambda section: (section.number, section.id))

@@ -159,6 +159,25 @@ async def test_menu_sends_multiple_weeks_as_one_sync(
 
 
 @pytest.mark.asyncio
+async def test_menu_can_sync_general_content(monkeypatch: pytest.MonkeyPatch) -> None:
+    course = Course(1, "FIT2001", "Current unit")
+    selections = iter([course, None])
+    synced: list[cli.MenuScope] = []
+    monkeypatch.setattr(cli, "_prompt_course_selection", lambda _courses: next(selections))
+    monkeypatch.setattr(cli, "_prompt_course_action", lambda _course: "general")
+
+    async def load_course(selected: Course) -> Course:
+        return selected
+
+    async def sync_course(_course: Course, scope: cli.MenuScope) -> None:
+        synced.append(scope)
+
+    await cli._menu_loop([course], load_course=load_course, sync_course=sync_course)
+
+    assert synced == ["general"]
+
+
+@pytest.mark.asyncio
 async def test_menu_returns_after_a_recoverable_sync_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

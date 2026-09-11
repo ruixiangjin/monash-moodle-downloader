@@ -193,6 +193,19 @@ def test_select_sections_can_combine_multiple_weeks_and_children() -> None:
     assert [section.id for section in selected] == [1, 2, 3, 4]
 
 
+def test_select_sections_can_choose_only_general_content() -> None:
+    sections = [
+        Section(1, 10, "Week 1 - Start"),
+        Section(2, 11, "Own-time", parent_number=10),
+        Section(3, 20, "Assessments", parent_number=0),
+        Section(4, 21, "Course information", parent_number=0),
+    ]
+
+    selected = select_sections(sections, general=True)
+
+    assert [section.id for section in selected] == [3, 4]
+
+
 def test_output_writes_week_assignment_and_manifest(tmp_path: Path) -> None:
     course = sample_course()
     course.sections = select_sections(course.sections, week=1)

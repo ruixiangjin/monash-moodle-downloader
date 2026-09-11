@@ -3,7 +3,7 @@
 import asyncio
 from collections.abc import Awaitable, Callable, Coroutine
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import typer
 from rich.console import Console
@@ -25,7 +25,8 @@ from monash_moodle_downloader.weeks import (
 )
 
 LoadCourse = Callable[[Course], Awaitable[Course]]
-SyncCourse = Callable[[Course, list[int] | None], Awaitable[None]]
+MenuScope = list[int] | Literal["general"] | None
+SyncCourse = Callable[[Course, MenuScope], Awaitable[None]]
 
 app = typer.Typer(
     name="mmd",
@@ -136,10 +137,11 @@ async def _menu() -> None:
             )
             async with downloader:
 
-                async def sync_course(course: Course, weeks: list[int] | None) -> None:
+                async def sync_course(course: Course, scope: MenuScope) -> None:
                     await _sync_populated_course(
                         course,
-                        weeks=weeks,
+                        weeks=scope if isinstance(scope, list) else None,
+                        general=scope == "general",
                         scanner=scanner,
                         downloader=downloader,
                         output_root=settings.output_root,
@@ -180,7 +182,8 @@ async def _menu_loop(
                 selected_weeks = _prompt_weeks(populated)
                 if selected_weeks is None:
                     continue
-            await sync_course(populated, selected_weeks)
+            scope: MenuScope = "general" if action == "general" else selected_weeks
+            await sync_course(populated, scope)
         except MmdError as error:
             console.print(f"[red]Error:[/red] {error}")
             console.print("Returning to course selection.")
@@ -220,6 +223,7 @@ def _prompt_course_action(course: Course) -> str | None:
     console.print(f"\n[bold]{course.code} — {course.name}[/bold]")
     console.print("  [cyan]1[/cyan]  Update the entire course")
     console.print("  [cyan]2[/cyan]  Update one or more specific Weeks")
+    console.print("  [cyan]3[/cyan]  Update General (non-Week content)")
     console.print("  [cyan]0[/cyan]  Back to course selection")
     while True:
         choice = typer.prompt("Enter a number", type=int)
@@ -229,7 +233,9 @@ def _prompt_course_action(course: Course) -> str | None:
             return "course"
         if choice == 2:
             return "week"
-        console.print("[yellow]Choose 0, 1, or 2.[/yellow]")
+        if choice == 3:
+            return "general"
+        console.print("[yellow]Choose 0, 1, 2, or 3.[/yellow]")
 
 
 def _prompt_weeks(course: Course) -> list[int] | None:
@@ -355,6 +361,7 @@ async def _sync(
                     await _sync_populated_course(
                         populated,
                         weeks=[week] if week is not None else None,
+                        general=False,
                         scanner=scanner,
                         downloader=downloader,
                         output_root=output_root,
@@ -366,12 +373,13 @@ async def _sync_populated_course(
     course: Course,
     *,
     weeks: list[int] | None,
+    general: bool = False,
     scanner: CourseContentScanner,
     downloader: ResourceDownloader,
     output_root: Path,
     refresh: bool,
 ) -> None:
-    manifest = await scanner.scan(course, weeks=weeks)
+    manifest = await scanner.scan(course, weeks=weeks, general=general)
     counts = await downloader.sync(manifest, refresh=refresh)
     destination = write_scan_output(manifest, output_root, on_warning=_print_output_warning)
     _print_sync_result(course.code, destination, counts)
