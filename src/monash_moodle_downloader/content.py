@@ -77,7 +77,8 @@ TRACKING_QUERY_PREFIXES = ("utm_",)
 DROP_SELECTORS = (
     "script, style, noscript, svg, canvas, video, audio, picture, source, img, iframe, "
     "button, form, input, .accesshide, .activityiconcontainer, .completion-info, "
-    ".activity-completion, .edit-menu, .dropdown, [aria-hidden='true']"
+    ".activity-completion, .edit-menu, .dropdown, [aria-hidden='true'], "
+    "a[href^='#collapse'], [data-bs-toggle='collapse'], [data-toggle='collapse']"
 )
 
 

@@ -17,6 +17,8 @@ from monash_moodle_downloader.models import (
     Activity,
     ActivityType,
     Course,
+    Resource,
+    ResourceStatus,
     Section,
     SyncManifest,
 )
@@ -130,6 +132,7 @@ async def test_scan_extracts_text_files_links_and_deduplicates() -> None:
 
     week, own_time, assessments = manifest.course.sections
     assert "Decorative banner" not in (week.activities[0].text_markdown or "")
+    assert "collapseOverviewSection" not in (week.activities[0].text_markdown or "")
     assert own_time.activities[0].text_markdown is None
     assert own_time.activities[0].text_duplicate_of == 100
     assert own_time.activities[1].resources[0].source_kind == "moodle_resource"
@@ -191,6 +194,27 @@ def test_output_writes_week_assignment_and_manifest(tmp_path: Path) -> None:
     assert "Assignment details" not in week_readme.read_text(encoding="utf-8")
 
 
+def test_output_links_downloaded_files_relative_to_each_readme(tmp_path: Path) -> None:
+    course = sample_course()
+    course.sections = select_sections(course.sections, week=1)
+    resource = course.sections[1].activities[1].resources
+    if not resource:
+        course.sections[1].activities[1].resources.append(
+            Resource(
+                "102:file",
+                "Lecture notes.pdf",
+                "https://learning.monash.edu/file.pdf",
+                "moodle_resource",
+                status=ResourceStatus.DOWNLOADED,
+                local_path="Week 01 - Introduction/Files/Lecture notes.pdf",
+            )
+        )
+    destination = write_scan_output(SyncManifest(course=course), tmp_path)
+    readme = destination / "Week 01 - Introduction" / "README.md"
+
+    assert "[Lecture notes.pdf](Files/Lecture%20notes.pdf)" in readme.read_text(encoding="utf-8")
+
+
 def test_url_and_path_helpers_remove_noise_and_secrets() -> None:
     assert normalise_url("https://example.com/a?utm_source=x&id=2#part") == (
         "https://example.com/a?id=2"
@@ -205,6 +229,19 @@ def test_url_and_path_helpers_remove_noise_and_secrets() -> None:
         == "a/b.csv"
     )
     assert safe_component("Week 1: A/B?") == "Week 1- A-B-"
+
+
+def test_manifest_removes_temporary_signatures_without_changing_runtime_url() -> None:
+    course = sample_course()
+    signed = "https://cdn.example/notes?X-Amz-Signature=secret&id=2&token=private"
+    resource = Resource("signed", "Notes", signed, "external_direct_file")
+    course.sections[0].activities[0].resources.append(resource)
+
+    exported = SyncManifest(course=course).to_dict()
+    exported_url = exported["course"]["sections"][0]["activities"][0]["resources"][0]["source_url"]
+
+    assert exported_url == "https://cdn.example/notes?id=2"
+    assert resource.source_url == signed
 
 
 def test_select_sections_rejects_a_missing_week() -> None:

@@ -34,6 +34,30 @@ def test_sync_rejects_week_with_all_courses() -> None:
     assert "--week cannot be combined with --all" in result.output
 
 
+def test_sync_passes_options_to_async_implementation(monkeypatch: pytest.MonkeyPatch) -> None:
+    received: list[dict[str, object]] = []
+
+    async def fake_sync(**options: object) -> None:
+        received.append(options)
+
+    monkeypatch.setattr(cli, "_sync", fake_sync)
+    result = runner.invoke(
+        app,
+        ["sync", "--course", "FIT2014", "--week", "2", "--refresh"],
+    )
+
+    assert result.exit_code == 0
+    assert received == [
+        {
+            "course_selector": "FIT2014",
+            "all_courses": False,
+            "week": 2,
+            "refresh": True,
+            "output": None,
+        }
+    ]
+
+
 def test_scan_accepts_course_and_week(monkeypatch: pytest.MonkeyPatch) -> None:
     received: list[tuple[str, int | None, Path | None]] = []
 

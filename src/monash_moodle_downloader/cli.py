@@ -9,7 +9,9 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from monash_moodle_downloader.cache import ResourceCache
 from monash_moodle_downloader.content import CourseContentScanner
+from monash_moodle_downloader.downloader import ResourceDownloader, SyncCounts
 from monash_moodle_downloader.errors import MmdError
 from monash_moodle_downloader.moodle import MoodleAjaxClient
 from monash_moodle_downloader.output import write_scan_output
@@ -22,13 +24,6 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
-
-
-def _planned(command: str) -> None:
-    console.print(
-        f"[yellow]{command}[/yellow] is part of the staged implementation and is not connected "
-        "to Moodle yet."
-    )
 
 
 def _run[T](awaitable: Coroutine[Any, Any, T]) -> T:
@@ -161,12 +156,54 @@ def sync(
     if all_courses and week is not None:
         raise typer.BadParameter("--week cannot be combined with --all.")
 
-    target = "all visible courses" if all_courses else course
-    console.print(f"Sync target: {target}")
-    if week is not None:
-        console.print(f"Week: {week}")
-    if refresh:
-        console.print("Remote metadata cache: bypassed")
-    if output is not None:
-        console.print(f"Output override: {output}")
-    _planned("sync")
+    _run(
+        _sync(
+            course_selector=course,
+            all_courses=all_courses,
+            week=week,
+            refresh=refresh,
+            output=output,
+        )
+    )
+
+
+async def _sync(
+    *,
+    course_selector: str | None,
+    all_courses: bool,
+    week: int | None,
+    refresh: bool,
+    output: Path | None,
+) -> None:
+    settings = Settings.default()
+    output_root = output if output is not None else settings.output_root
+    async with BrowserSession(settings, headless=True) as session:
+        await session.ensure_authenticated()
+        client = MoodleAjaxClient(session.page, base_url=settings.moodle_base_url)
+        if all_courses:
+            courses_to_sync = await client.list_courses()
+        else:
+            assert course_selector is not None
+            courses_to_sync = [await client.resolve_course(course_selector)]
+
+        with ResourceCache(settings.database) as cache:
+            downloader = await ResourceDownloader.from_page(session.page, cache, output_root)
+            async with downloader:
+                for course in courses_to_sync:
+                    populated = await client.get_course_state(course)
+                    scanner = CourseContentScanner(session.page, base_url=settings.moodle_base_url)
+                    manifest = await scanner.scan(populated, week=week)
+                    counts = await downloader.sync(manifest, refresh=refresh)
+                    destination = write_scan_output(manifest, output_root)
+                    _print_sync_result(course.code, destination, counts)
+
+
+def _print_sync_result(code: str, destination: Path, counts: SyncCounts) -> None:
+    console.print(f"[green]Sync complete:[/green] {code}")
+    console.print(f"Downloaded: {counts.downloaded}")
+    console.print(f"Unchanged: {counts.unchanged}")
+    console.print(f"Skipped media: {counts.skipped_media}")
+    console.print(f"Unsupported pages: {counts.unsupported}")
+    console.print(f"Missing remotely: {counts.missing_remote}")
+    console.print(f"Failed: {counts.failed}")
+    console.print(f"Output: {destination}")

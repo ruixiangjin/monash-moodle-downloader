@@ -5,7 +5,17 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, cast
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+SENSITIVE_QUERY_KEYS = {
+    "access_token",
+    "auth",
+    "key",
+    "signature",
+    "sesskey",
+    "token",
+}
 
 
 class ActivityType(StrEnum):
@@ -123,4 +133,22 @@ class SyncManifest:
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible representation of the manifest."""
-        return asdict(self)
+        return cast(dict[str, Any], sanitise_manifest_data(asdict(self)))
+
+
+def sanitise_manifest_data(value: Any) -> Any:
+    """Remove temporary credentials from URLs in exported manifest data."""
+    if isinstance(value, dict):
+        return {key: sanitise_manifest_data(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [sanitise_manifest_data(item) for item in value]
+    if isinstance(value, str) and value.startswith(("http://", "https://")):
+        parsed = urlparse(value)
+        query = [
+            (key, item)
+            for key, item in parse_qsl(parsed.query, keep_blank_values=True)
+            if key.casefold() not in SENSITIVE_QUERY_KEYS
+            and not key.casefold().startswith("x-amz-")
+        ]
+        return urlunparse(parsed._replace(query=urlencode(query)))
+    return value
