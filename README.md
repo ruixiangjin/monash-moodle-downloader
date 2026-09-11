@@ -8,7 +8,7 @@ depend on a Moodle REST token or one fixed course layout.
 
 - Week headings and useful course, Page, Text and media, and Assignment text as Markdown.
 - File, Folder, and Assignment attachments such as PDF, Office, CSV, text, code, JAR, and ZIP.
-- A versioned `manifest.json` containing the detected structure and sync result.
+- A versioned `<course code> - Last Sync.json` containing the latest detected structure and result.
 - External links as references; a confirmed direct non-media file may be downloaded.
 
 Images, video, audio, fonts, Canva, Panopto, YouTube, H5P, and ordinary external webpages are not
@@ -55,10 +55,12 @@ The menu provides these choices:
 
 1. Incrementally update every current (not removed-from-view) course.
 2. Select one current or removed-from-view course, then update the entire course.
-3. Select one course, then enter a positive Week number to update only that Week.
+3. Select one course, then enter one or more available Weeks such as `3`, `3-5`, or `3,7-8`.
 
 The menu performs the same incremental sync as the command-line options. It does not automatically
-include removed-from-view courses in the “all current courses” operation.
+include removed-from-view courses in the “all current courses” operation. It reads each course's
+actual Week list before accepting a selection, supports Week 0 when present, and stays open after
+every operation until you explicitly choose `0 Exit` from the main menu.
 
 ## Scan and synchronise
 
@@ -84,16 +86,22 @@ The default output is `~/Desktop/Monash Moodle Downloads` and has this shape:
 
 ```text
 Course name/
-├── README.md
-├── manifest.json
+├── Course name.md
+├── COURSE - Last Sync.json
 ├── Week 01 - Title/
-│   ├── README.md
+│   ├── Week 1 - Title.md
 │   ├── Files/
 │   └── Assignments/
+│       └── Assignment name/
+│           └── Assignment name.md
 └── General/
+    └── General.md
 ```
 
 Use `--output /another/folder` on `scan` or `sync` to choose a different material directory.
+Generated Markdown files use their first heading as the filename. On the next scan or sync, the
+tool safely migrates recognised legacy `README.md` and `manifest.json` files. Unrecognised files or
+conflicting files with different content are preserved with a warning.
 
 ## Incremental behaviour
 

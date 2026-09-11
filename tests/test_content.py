@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import Any, cast
 
@@ -178,6 +179,20 @@ async def test_scan_can_select_one_week_and_children() -> None:
     assert [section.number for section in manifest.course.sections] == [7, 8]
 
 
+def test_select_sections_can_combine_multiple_weeks_and_children() -> None:
+    sections = [
+        Section(1, 10, "Week 0 - Orientation"),
+        Section(2, 11, "Own-time", parent_number=10),
+        Section(3, 20, "Week 2 - Types"),
+        Section(4, 21, "Workshop", parent_number=20),
+        Section(5, 30, "Week 3 - Later"),
+    ]
+
+    selected = select_sections(sections, weeks=[0, 2])
+
+    assert [section.id for section in selected] == [1, 2, 3, 4]
+
+
 def test_output_writes_week_assignment_and_manifest(tmp_path: Path) -> None:
     course = sample_course()
     course.sections = select_sections(course.sections, week=1)
@@ -186,12 +201,13 @@ def test_output_writes_week_assignment_and_manifest(tmp_path: Path) -> None:
 
     destination = write_scan_output(manifest, tmp_path)
 
-    assert (destination / "manifest.json").is_file()
-    week_readme = next(destination.glob("Week 01*/README.md"))
-    assignment_readme = next(destination.glob("Week 01*/Assignments/*/README.md"))
-    assert "Exercise submission" in week_readme.read_text(encoding="utf-8")
-    assert "Assignment details" in assignment_readme.read_text(encoding="utf-8")
-    assert "Assignment details" not in week_readme.read_text(encoding="utf-8")
+    assert (destination / "FIT0000 - Last Sync.json").is_file()
+    assert (destination / "FIT0000 Example Unit.md").is_file()
+    week_document = next(destination.glob("Week 01*/Week 1 - Introduction.md"))
+    assignment_document = next(destination.glob("Week 01*/Assignments/*/Exercise submission.md"))
+    assert "Exercise submission" in week_document.read_text(encoding="utf-8")
+    assert "Assignment details" in assignment_document.read_text(encoding="utf-8")
+    assert "Assignment details" not in week_document.read_text(encoding="utf-8")
 
 
 def test_output_links_downloaded_files_relative_to_each_readme(tmp_path: Path) -> None:
@@ -210,9 +226,114 @@ def test_output_links_downloaded_files_relative_to_each_readme(tmp_path: Path) -
             )
         )
     destination = write_scan_output(SyncManifest(course=course), tmp_path)
-    readme = destination / "Week 01 - Introduction" / "README.md"
+    readme = destination / "Week 01 - Introduction" / "Week 1 - Introduction.md"
 
     assert "[Lecture notes.pdf](Files/Lecture%20notes.pdf)" in readme.read_text(encoding="utf-8")
+
+
+def test_partial_writes_keep_all_existing_weeks_in_course_index(tmp_path: Path) -> None:
+    first = Course(
+        77,
+        "FIT0000",
+        "FIT0000 Example Unit",
+        sections=[Section(1, 10, "Week 1 - Start")],
+    )
+    second = Course(
+        77,
+        "FIT0000",
+        "FIT0000 Example Unit",
+        sections=[Section(2, 20, "Week 2 - Continue")],
+    )
+
+    destination = write_scan_output(SyncManifest(course=first), tmp_path)
+    write_scan_output(SyncManifest(course=second), tmp_path)
+    index = (destination / "FIT0000 Example Unit.md").read_text(encoding="utf-8")
+
+    assert "Week 1 - Start" in index
+    assert "Week 2 - Continue" in index
+
+
+def test_output_safely_migrates_recognised_legacy_files(tmp_path: Path) -> None:
+    course = Course(
+        77,
+        "FIT0000",
+        "FIT0000 Example Unit",
+        sections=[Section(2, 20, "Week 2 - Continue")],
+    )
+    destination = tmp_path / course.name
+    assignment = destination / "Week 01 - Introduction" / "Assignments" / "Old task (10%)"
+    assignment.mkdir(parents=True)
+    (destination / "README.md").write_text(
+        f"# {course.name}\n\n## Scanned content\n",
+        encoding="utf-8",
+    )
+    week_legacy = destination / "Week 01 - Introduction" / "README.md"
+    week_legacy.write_text(
+        "# Week 1 - Introduction\n\n[Old task](Assignments/Old task (10%)/README.md)\n",
+        encoding="utf-8",
+    )
+    (assignment / "README.md").write_text(
+        "# Old task (10%)\n\nDetails.\n",
+        encoding="utf-8",
+    )
+    (destination / "manifest.json").write_text(
+        json.dumps({"schema_version": 1, "course": {"id": course.id}}),
+        encoding="utf-8",
+    )
+
+    write_scan_output(SyncManifest(course=course), tmp_path)
+
+    assert not list(destination.rglob("README.md"))
+    assert not (destination / "manifest.json").exists()
+    migrated_week = destination / "Week 01 - Introduction" / "Week 1 - Introduction.md"
+    assert "Assignments/Old%20task%20%2810%25%29/Old%20task%20%2810%25%29.md" in (
+        migrated_week.read_text(encoding="utf-8")
+    )
+    assert (assignment / "Old task (10%).md").is_file()
+
+
+def test_output_preserves_unrecognised_or_conflicting_legacy_files(tmp_path: Path) -> None:
+    course = Course(
+        77,
+        "FIT0000",
+        "FIT0000 Example Unit",
+        sections=[Section(1, 10, "Week 1 - Start")],
+    )
+    destination = tmp_path / course.name
+    week_directory = destination / "Week 01 - Start"
+    week_directory.mkdir(parents=True)
+    custom = week_directory / "README.md"
+    custom.write_text("# My personal notes\n", encoding="utf-8")
+    warnings: list[str] = []
+
+    write_scan_output(SyncManifest(course=course), tmp_path, on_warning=warnings.append)
+
+    assert custom.is_file()
+    assert any("unrecognised" in warning for warning in warnings)
+
+
+def test_output_preserves_recognised_legacy_when_new_name_already_differs(
+    tmp_path: Path,
+) -> None:
+    course = Course(
+        77,
+        "FIT0000",
+        "FIT0000 Example Unit",
+        sections=[Section(2, 20, "Week 2 - Continue")],
+    )
+    week_directory = tmp_path / course.name / "Week 01 - Start"
+    week_directory.mkdir(parents=True)
+    legacy = week_directory / "README.md"
+    target = week_directory / "Week 1 - Start.md"
+    legacy.write_text("# Week 1 - Start\n\nLegacy details.\n", encoding="utf-8")
+    target.write_text("# Week 1 - Start\n\nDifferent details.\n", encoding="utf-8")
+    warnings: list[str] = []
+
+    write_scan_output(SyncManifest(course=course), tmp_path, on_warning=warnings.append)
+
+    assert legacy.is_file()
+    assert target.is_file()
+    assert any("different content" in warning for warning in warnings)
 
 
 def test_url_and_path_helpers_remove_noise_and_secrets() -> None:

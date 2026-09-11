@@ -1,11 +1,12 @@
-"""Write human-readable Markdown and a machine-readable scan manifest."""
+"""Write titled Markdown and a machine-readable record of the latest operation."""
 
 from __future__ import annotations
 
 import json
 import os
 import re
-from collections.abc import Iterable
+import warnings
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from urllib.parse import quote
 
@@ -20,21 +21,28 @@ from monash_moodle_downloader.models import (
 )
 
 UNSAFE_PATH_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+WarningHandler = Callable[[str], None]
 
 
-def write_scan_output(manifest: SyncManifest, output_root: Path) -> Path:
-    """Write a scan without creating any attachment bodies."""
+def write_scan_output(
+    manifest: SyncManifest,
+    output_root: Path,
+    *,
+    on_warning: WarningHandler | None = None,
+) -> Path:
+    """Write readable output and safely migrate recognised legacy index files."""
     course = manifest.course
     course_directory = course_directory_for(course, output_root)
     course_directory.mkdir(parents=True, exist_ok=True)
-    (course_directory / "manifest.json").write_text(
+    existing_before = {path.resolve() for path in course_directory.rglob("*") if path.is_file()}
+    last_sync = course_directory / last_sync_filename(course)
+    _write_text(
+        last_sync,
         f"{json.dumps(manifest.to_dict(), ensure_ascii=False, indent=2)}\n",
-        encoding="utf-8",
     )
 
     week_roots = [section for section in course.sections if week_number(section.title) is not None]
     assigned: set[int] = set()
-    index_lines = [f"# {course.name}", "", "## Scanned content", ""]
 
     for root in week_roots:
         children = [section for section in course.sections if section.parent_number == root.number]
@@ -44,18 +52,33 @@ def write_scan_output(manifest: SyncManifest, output_root: Path) -> Path:
         group_directory = course_directory / directory_name
         group_directory.mkdir(parents=True, exist_ok=True)
         _write_group(course_directory, group_directory, root.title, grouped)
-        index_lines.append(f"- [{root.title}]({directory_name}/README.md)")
 
     general = [section for section in course.sections if section.id not in assigned]
     if general:
         general_directory = course_directory / "General"
         general_directory.mkdir(parents=True, exist_ok=True)
         _write_group(course_directory, general_directory, "General", general)
-        index_lines.append("- [General](General/README.md)")
 
-    (course_directory / "README.md").write_text(
-        f"{'\n'.join(index_lines).rstrip()}\n",
-        encoding="utf-8",
+    _migrate_legacy_markdown(
+        course_directory,
+        existing_before=existing_before,
+        on_warning=on_warning,
+    )
+    course_document = course_directory / markdown_filename(course.name)
+    _write_course_index(course_directory, course_document, course)
+    _migrate_legacy_manifest(
+        course_directory / "manifest.json",
+        last_sync,
+        course,
+        target_existed=last_sync.resolve() in existing_before,
+        on_warning=on_warning,
+    )
+    _migrate_one_legacy_markdown(
+        course_directory / "README.md",
+        course_document,
+        expected_title=course.name,
+        target_existed=course_document.resolve() in existing_before,
+        on_warning=on_warning,
     )
     return course_directory
 
@@ -76,7 +99,7 @@ def _write_group(
                 assignment_path = _write_assignment(course_directory, directory, activity)
                 lines.extend(
                     [
-                        f"### [{activity.name}]({assignment_path.as_posix()})",
+                        f"### [{activity.name}]({quote(assignment_path.as_posix(), safe='/')})",
                         "",
                         "Type: assignment",
                         "",
@@ -84,10 +107,7 @@ def _write_group(
                 )
             else:
                 lines.extend(_activity_markdown(course_directory, directory, activity))
-    (directory / "README.md").write_text(
-        f"{'\n'.join(lines).rstrip()}\n",
-        encoding="utf-8",
-    )
+    _write_text(directory / markdown_filename(title), f"{'\n'.join(lines).rstrip()}\n")
 
 
 def _write_assignment(
@@ -95,7 +115,8 @@ def _write_assignment(
     group_directory: Path,
     activity: Activity,
 ) -> Path:
-    relative = Path("Assignments") / safe_component(activity.name) / "README.md"
+    filename = markdown_filename(activity.name)
+    relative = Path("Assignments") / safe_component(activity.name) / filename
     destination = group_directory / relative
     destination.parent.mkdir(parents=True, exist_ok=True)
     lines = [
@@ -103,7 +124,7 @@ def _write_assignment(
         "",
         *_activity_details(course_directory, destination.parent, activity),
     ]
-    destination.write_text(f"{'\n'.join(lines).rstrip()}\n", encoding="utf-8")
+    _write_text(destination, f"{'\n'.join(lines).rstrip()}\n")
     return relative
 
 
@@ -169,6 +190,203 @@ def safe_component(value: str, *, max_length: int = 120) -> str:
     cleaned = UNSAFE_PATH_CHARS.sub("-", value)
     cleaned = " ".join(cleaned.split()).strip(" .")
     return (cleaned or "Untitled")[:max_length].rstrip(" .")
+
+
+def markdown_filename(title: str) -> str:
+    """Name a generated Markdown document after its first-level heading."""
+    return f"{safe_component(title)}.md"
+
+
+def last_sync_filename(course: Course) -> str:
+    return f"{safe_component(course.code)} - Last Sync.json"
+
+
+def _write_course_index(directory: Path, destination: Path, course: Course) -> None:
+    entries: list[tuple[int, str, Path]] = []
+    for child in directory.iterdir():
+        if not child.is_dir():
+            continue
+        if child.name == "General":
+            document = child / markdown_filename("General")
+            if document.is_file():
+                entries.append((-1, "General", document))
+            continue
+        match = re.match(r"^Week\s+0*(\d+)\b", child.name, flags=re.IGNORECASE)
+        if match is None:
+            continue
+        number = int(match.group(1))
+        week_document = _week_document_in(child, number)
+        if week_document is not None:
+            title = _first_heading(week_document) or child.name
+            entries.append((number, title, week_document))
+
+    lines = [f"# {course.name}", "", "## Local course content", ""]
+    for _, title, document in sorted(entries, key=lambda entry: (entry[0], entry[1])):
+        relative = os.path.relpath(document, directory)
+        lines.append(f"- [{title}]({quote(Path(relative).as_posix(), safe='/')})")
+    _write_text(destination, f"{'\n'.join(lines).rstrip()}\n")
+
+
+def _week_document_in(directory: Path, number: int) -> Path | None:
+    for candidate in sorted(directory.glob("*.md")):
+        if candidate.name == "README.md":
+            continue
+        title = _first_heading(candidate)
+        if title is not None and week_number(title) == number:
+            return candidate
+    return None
+
+
+def _migrate_legacy_markdown(
+    course_directory: Path,
+    *,
+    existing_before: set[Path],
+    on_warning: WarningHandler | None,
+) -> None:
+    plans: list[tuple[Path, Path, str]] = []
+    for legacy in course_directory.rglob("README.md"):
+        if legacy.parent == course_directory:
+            continue
+        title = _first_heading(legacy)
+        if title is None:
+            _emit_warning(on_warning, f"Preserved unrecognised legacy file: {legacy}")
+            continue
+        if not _legacy_title_matches_location(legacy, title):
+            _emit_warning(on_warning, f"Preserved unrecognised legacy file: {legacy}")
+            continue
+        plans.append((legacy, legacy.with_name(markdown_filename(title)), title))
+
+    link_targets = {legacy.resolve(): target for legacy, target, _ in plans}
+    for legacy, target, title in sorted(
+        plans,
+        key=lambda plan: len(plan[0].parts),
+        reverse=True,
+    ):
+        _migrate_one_legacy_markdown(
+            legacy,
+            target,
+            expected_title=title,
+            target_existed=target.resolve() in existing_before,
+            on_warning=on_warning,
+            link_targets=link_targets,
+        )
+
+
+def _legacy_title_matches_location(path: Path, title: str) -> bool:
+    if path.parent.name == "General":
+        return title == "General"
+    if path.parent.parent.name == "Assignments":
+        return safe_component(title) == path.parent.name
+    match = re.match(r"^Week\s+0*(\d+)\b", path.parent.name, flags=re.IGNORECASE)
+    return match is not None and week_number(title) == int(match.group(1))
+
+
+def _migrate_one_legacy_markdown(
+    legacy: Path,
+    target: Path,
+    *,
+    expected_title: str,
+    target_existed: bool,
+    on_warning: WarningHandler | None,
+    link_targets: dict[Path, Path] | None = None,
+) -> None:
+    if not legacy.is_file():
+        return
+    content = legacy.read_text(encoding="utf-8")
+    heading = _first_heading_from_text(content)
+    if heading is None or safe_component(heading) != safe_component(expected_title):
+        _emit_warning(on_warning, f"Preserved unrecognised legacy file: {legacy}")
+        return
+    migrated = _rewrite_legacy_links(content, legacy.parent, link_targets or {})
+    if target.is_file():
+        if target_existed and target.read_text(encoding="utf-8") != migrated:
+            _emit_warning(
+                on_warning,
+                f"Preserved legacy file because {target.name} already has different content: "
+                f"{legacy}",
+            )
+            return
+    else:
+        _write_text(target, migrated)
+    legacy.unlink()
+
+
+def _rewrite_legacy_links(
+    content: str,
+    base_directory: Path,
+    link_targets: dict[Path, Path],
+) -> str:
+    migrated = content
+    for old_target, new_target in link_targets.items():
+        old_relative = Path(os.path.relpath(old_target, base_directory)).as_posix()
+        new_relative = Path(os.path.relpath(new_target, base_directory)).as_posix()
+        encoded_new = quote(new_relative, safe="/")
+        for old_form in {old_relative, quote(old_relative, safe="/")}:
+            migrated = migrated.replace(f"]({old_form})", f"]({encoded_new})")
+    return migrated
+
+
+def _migrate_legacy_manifest(
+    legacy: Path,
+    target: Path,
+    course: Course,
+    *,
+    target_existed: bool,
+    on_warning: WarningHandler | None,
+) -> None:
+    if not legacy.is_file():
+        return
+    try:
+        data = json.loads(legacy.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        _emit_warning(on_warning, f"Preserved unrecognised legacy file: {legacy}")
+        return
+    record = data.get("course") if isinstance(data, dict) else None
+    valid = (
+        isinstance(data, dict)
+        and isinstance(data.get("schema_version"), int)
+        and isinstance(record, dict)
+        and record.get("id") == course.id
+    )
+    if not valid:
+        _emit_warning(on_warning, f"Preserved unrecognised legacy file: {legacy}")
+        return
+    if target_existed and target.read_text(encoding="utf-8") != legacy.read_text(encoding="utf-8"):
+        _emit_warning(
+            on_warning,
+            f"Preserved legacy manifest because {target.name} already has different content: "
+            f"{legacy}",
+        )
+        return
+    legacy.unlink()
+
+
+def _first_heading(path: Path) -> str | None:
+    try:
+        return _first_heading_from_text(path.read_text(encoding="utf-8"))
+    except OSError:
+        return None
+
+
+def _first_heading_from_text(content: str) -> str | None:
+    for line in content.splitlines():
+        if line.startswith("# "):
+            return line[2:].strip() or None
+    return None
+
+
+def _write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(content, encoding="utf-8")
+    temporary.replace(path)
+
+
+def _emit_warning(handler: WarningHandler | None, message: str) -> None:
+    if handler is not None:
+        handler(message)
+    else:
+        warnings.warn(message, UserWarning, stacklevel=2)
 
 
 def course_directory_for(course: Course, output_root: Path) -> Path:

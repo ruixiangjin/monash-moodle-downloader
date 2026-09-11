@@ -89,9 +89,15 @@ class CourseContentScanner:
         self.page = page
         self.base_url = base_url.rstrip("/")
 
-    async def scan(self, course: Course, *, week: int | None = None) -> SyncManifest:
+    async def scan(
+        self,
+        course: Course,
+        *,
+        week: int | None = None,
+        weeks: Iterable[int] | None = None,
+    ) -> SyncManifest:
         """Scan course pages and return a manifest without downloading attachment bodies."""
-        selected = select_sections(course.sections, week=week)
+        selected = select_sections(course.sections, week=week, weeks=weeks)
         page_groups: dict[str, list[Section]] = defaultdict(list)
         for section in selected:
             page_groups[self._section_page_url(course, section)].append(section)
@@ -301,17 +307,30 @@ class CourseContentScanner:
                 )
 
 
-def select_sections(sections: Iterable[Section], *, week: int | None) -> list[Section]:
-    """Select one Week and its children, or all visible sections."""
+def select_sections(
+    sections: Iterable[Section],
+    *,
+    week: int | None = None,
+    weeks: Iterable[int] | None = None,
+) -> list[Section]:
+    """Select requested Week roots and their children, or all visible sections."""
+    if week is not None and weeks is not None:
+        raise ValueError("Choose either week or weeks, not both.")
     visible = [section for section in sections if section.visible]
-    if week is None:
+    requested = set(weeks) if weeks is not None else ({week} if week is not None else None)
+    if requested is None:
         return sorted(visible, key=lambda section: (section.number, section.id))
-    roots = [section for section in visible if week_number(section.title) == week]
-    if not roots:
-        raise MoodleApiError(f"Week {week} was not found in this course.")
-    root = roots[0]
-    selected = [root]
-    selected.extend(section for section in visible if section.parent_number == root.number)
+    if not requested:
+        raise MoodleApiError("At least one Week must be selected.")
+    roots = [section for section in visible if week_number(section.title) in requested]
+    found = {week_number(section.title) for section in roots}
+    missing = sorted(requested - found)
+    if missing:
+        rendered = ", ".join(str(number) for number in missing)
+        raise MoodleApiError(f"Week {rendered} was not found in this course.")
+    root_numbers = {root.number for root in roots}
+    selected = list(roots)
+    selected.extend(section for section in visible if section.parent_number in root_numbers)
     return sorted(selected, key=lambda section: (section.number, section.id))
 
 

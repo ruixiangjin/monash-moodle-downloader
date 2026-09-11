@@ -1,7 +1,7 @@
 """Command-line interface for Monash Moodle Downloader."""
 
 import asyncio
-from collections.abc import Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -18,6 +18,14 @@ from monash_moodle_downloader.moodle import MoodleAjaxClient
 from monash_moodle_downloader.output import write_scan_output
 from monash_moodle_downloader.session import BrowserSession
 from monash_moodle_downloader.settings import Settings
+from monash_moodle_downloader.weeks import (
+    available_weeks,
+    format_week_ranges,
+    parse_week_selection,
+)
+
+LoadCourse = Callable[[Course], Awaitable[Course]]
+SyncCourse = Callable[[Course, list[int] | None], Awaitable[None]]
 
 app = typer.Typer(
     name="mmd",
@@ -109,46 +117,73 @@ def _print_course_table(title: str, courses_to_show: list[Course]) -> None:
 @app.command()
 def menu() -> None:
     """Open an interactive terminal menu for course synchronisation."""
-    while True:
-        courses_to_show = _run(_load_menu_courses())
-        selection = _prompt_course_selection(courses_to_show)
-        if selection is None:
-            console.print("No changes were made.")
-            return
-        if isinstance(selection, str):
-            _run(
-                _sync(
-                    course_selector=None,
-                    all_courses=True,
-                    week=None,
-                    refresh=False,
-                    output=None,
-                )
-            )
-            return
-
-        action = _prompt_course_action(selection)
-        if action is None:
-            continue
-        week = _prompt_week() if action == "week" else None
-        _run(
-            _sync(
-                course_selector=str(selection.id),
-                all_courses=False,
-                week=week,
-                refresh=False,
-                output=None,
-            )
-        )
-        return
+    _run(_menu())
 
 
-async def _load_menu_courses() -> list[Course]:
+async def _menu() -> None:
     settings = Settings.default()
     async with BrowserSession(settings, headless=True) as session:
         await session.ensure_authenticated()
         client = MoodleAjaxClient(session.page, base_url=settings.moodle_base_url)
-        return await client.list_courses(include_removed=True)
+        courses_to_show = await client.list_courses(include_removed=True)
+        scanner = CourseContentScanner(session.page, base_url=settings.moodle_base_url)
+
+        with ResourceCache(settings.database) as cache:
+            downloader = await ResourceDownloader.from_page(
+                session.page,
+                cache,
+                settings.output_root,
+            )
+            async with downloader:
+
+                async def sync_course(course: Course, weeks: list[int] | None) -> None:
+                    await _sync_populated_course(
+                        course,
+                        weeks=weeks,
+                        scanner=scanner,
+                        downloader=downloader,
+                        output_root=settings.output_root,
+                        refresh=False,
+                    )
+
+                await _menu_loop(
+                    courses_to_show,
+                    load_course=client.get_course_state,
+                    sync_course=sync_course,
+                )
+
+
+async def _menu_loop(
+    courses_to_show: list[Course],
+    *,
+    load_course: LoadCourse,
+    sync_course: SyncCourse,
+) -> None:
+    while True:
+        selection = _prompt_course_selection(courses_to_show)
+        if selection is None:
+            console.print("Exiting Moodle Downloader.")
+            return
+        try:
+            if isinstance(selection, str):
+                current = [course for course in courses_to_show if not course.removed_from_view]
+                for course in current:
+                    await sync_course(await load_course(course), None)
+                continue
+
+            action = _prompt_course_action(selection)
+            if action is None:
+                continue
+            populated = await load_course(selection)
+            selected_weeks = None
+            if action == "week":
+                selected_weeks = _prompt_weeks(populated)
+                if selected_weeks is None:
+                    continue
+            await sync_course(populated, selected_weeks)
+        except MmdError as error:
+            console.print(f"[red]Error:[/red] {error}")
+            console.print("Returning to course selection.")
 
 
 def _prompt_course_selection(courses_to_show: list[Course]) -> Course | str | None:
@@ -184,7 +219,7 @@ def _prompt_course_selection(courses_to_show: list[Course]) -> Course | str | No
 def _prompt_course_action(course: Course) -> str | None:
     console.print(f"\n[bold]{course.code} — {course.name}[/bold]")
     console.print("  [cyan]1[/cyan]  Update the entire course")
-    console.print("  [cyan]2[/cyan]  Update one specific week")
+    console.print("  [cyan]2[/cyan]  Update one or more specific Weeks")
     console.print("  [cyan]0[/cyan]  Back to course selection")
     while True:
         choice = typer.prompt("Enter a number", type=int)
@@ -197,12 +232,26 @@ def _prompt_course_action(course: Course) -> str | None:
         console.print("[yellow]Choose 0, 1, or 2.[/yellow]")
 
 
-def _prompt_week() -> int:
+def _prompt_weeks(course: Course) -> list[int] | None:
+    options = available_weeks(course.sections)
+    if not options:
+        console.print("[yellow]This course has no visible Week sections.[/yellow]")
+        return None
+    console.print("\n[bold]Available Weeks[/bold]")
+    for option in options:
+        console.print(f"  [cyan]{option.number}[/cyan]  {option.title}")
+    available_numbers = [option.number for option in options]
+    console.print(f"Available: {format_week_ranges(available_numbers)}")
+    console.print("Examples: 3, 3-5, 3,7-8. Enter b to go back.")
     while True:
-        week = int(typer.prompt("Enter the week number", type=int))
-        if week > 0:
-            return week
-        console.print("[yellow]Week must be a positive number.[/yellow]")
+        value = typer.prompt("Enter Week selection", type=str)
+        if value.strip().casefold() == "b":
+            return None
+        try:
+            return parse_week_selection(value, available_numbers)
+        except ValueError as error:
+            console.print(f"[yellow]{error}[/yellow]")
+            console.print(f"Available: {format_week_ranges(available_numbers)}")
 
 
 @app.command()
@@ -226,7 +275,7 @@ async def _scan(course_selector: str, *, week: int | None, output: Path | None) 
         scanner = CourseContentScanner(session.page, base_url=settings.moodle_base_url)
         manifest = await scanner.scan(course, week=week)
 
-    destination = write_scan_output(manifest, output_root)
+    destination = write_scan_output(manifest, output_root, on_warning=_print_output_warning)
     activities = [
         activity for section in manifest.course.sections for activity in section.activities
     ]
@@ -303,10 +352,33 @@ async def _sync(
                 for course in courses_to_sync:
                     populated = await client.get_course_state(course)
                     scanner = CourseContentScanner(session.page, base_url=settings.moodle_base_url)
-                    manifest = await scanner.scan(populated, week=week)
-                    counts = await downloader.sync(manifest, refresh=refresh)
-                    destination = write_scan_output(manifest, output_root)
-                    _print_sync_result(course.code, destination, counts)
+                    await _sync_populated_course(
+                        populated,
+                        weeks=[week] if week is not None else None,
+                        scanner=scanner,
+                        downloader=downloader,
+                        output_root=output_root,
+                        refresh=refresh,
+                    )
+
+
+async def _sync_populated_course(
+    course: Course,
+    *,
+    weeks: list[int] | None,
+    scanner: CourseContentScanner,
+    downloader: ResourceDownloader,
+    output_root: Path,
+    refresh: bool,
+) -> None:
+    manifest = await scanner.scan(course, weeks=weeks)
+    counts = await downloader.sync(manifest, refresh=refresh)
+    destination = write_scan_output(manifest, output_root, on_warning=_print_output_warning)
+    _print_sync_result(course.code, destination, counts)
+
+
+def _print_output_warning(message: str) -> None:
+    console.print(f"[yellow]Warning:[/yellow] {message}")
 
 
 def _print_sync_result(code: str, destination: Path, counts: SyncCounts) -> None:

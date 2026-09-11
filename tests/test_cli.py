@@ -1,11 +1,13 @@
 from pathlib import Path
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from monash_moodle_downloader import cli
 from monash_moodle_downloader.cli import app
-from monash_moodle_downloader.models import Course
+from monash_moodle_downloader.errors import MoodleApiError
+from monash_moodle_downloader.models import Course, Section
 
 runner = CliRunner()
 
@@ -79,56 +81,118 @@ def menu_courses() -> list[Course]:
     ]
 
 
-def test_menu_updates_all_current_courses(monkeypatch: pytest.MonkeyPatch) -> None:
-    received: list[dict[str, object]] = []
+@pytest.mark.asyncio
+async def test_menu_updates_current_courses_then_stays_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    courses = menu_courses()
+    selections = iter(["all", None])
+    loaded: list[int] = []
+    synced: list[tuple[int, list[int] | None]] = []
+    monkeypatch.setattr(cli, "_prompt_course_selection", lambda _courses: next(selections))
 
-    async def fake_load() -> list[Course]:
-        return menu_courses()
+    async def load_course(course: Course) -> Course:
+        loaded.append(course.id)
+        return course
 
-    async def fake_sync(**options: object) -> None:
-        received.append(options)
+    async def sync_course(course: Course, weeks: list[int] | None) -> None:
+        synced.append((course.id, weeks))
 
-    monkeypatch.setattr(cli, "_load_menu_courses", fake_load)
-    monkeypatch.setattr(cli, "_sync", fake_sync)
+    await cli._menu_loop(courses, load_course=load_course, sync_course=sync_course)
 
-    result = runner.invoke(app, ["menu"], input="1\n")
-
-    assert result.exit_code == 0
-    assert "Current courses" in result.output
-    assert "Removed from view" in result.output
-    assert received == [
-        {
-            "course_selector": None,
-            "all_courses": True,
-            "week": None,
-            "refresh": False,
-            "output": None,
-        }
-    ]
+    assert loaded == [1]
+    assert synced == [(1, None)]
 
 
-def test_menu_selects_removed_course_and_week(monkeypatch: pytest.MonkeyPatch) -> None:
-    received: list[dict[str, object]] = []
+@pytest.mark.asyncio
+async def test_menu_runs_two_week_operations_before_manual_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    course = Course(
+        1,
+        "FIT2001",
+        "Current unit",
+        sections=[
+            Section(10, 10, "Week 1 - Start"),
+            Section(20, 20, "Week 2 - Continue"),
+        ],
+    )
+    selections = iter([course, course, None])
+    actions = iter(["week", "week"])
+    week_choices = iter([[1], [2]])
+    synced: list[list[int] | None] = []
+    monkeypatch.setattr(cli, "_prompt_course_selection", lambda _courses: next(selections))
+    monkeypatch.setattr(cli, "_prompt_course_action", lambda _course: next(actions))
+    monkeypatch.setattr(cli, "_prompt_weeks", lambda _course: next(week_choices))
 
-    async def fake_load() -> list[Course]:
-        return menu_courses()
+    async def load_course(selected: Course) -> Course:
+        return selected
 
-    async def fake_sync(**options: object) -> None:
-        received.append(options)
+    async def sync_course(_course: Course, weeks: list[int] | None) -> None:
+        synced.append(weeks)
 
-    monkeypatch.setattr(cli, "_load_menu_courses", fake_load)
-    monkeypatch.setattr(cli, "_sync", fake_sync)
+    await cli._menu_loop([course], load_course=load_course, sync_course=sync_course)
 
-    result = runner.invoke(app, ["menu"], input="3\n2\n4\n")
+    assert synced == [[1], [2]]
 
-    assert result.exit_code == 0
-    assert "FIT1001" in result.output
-    assert received == [
-        {
-            "course_selector": "2",
-            "all_courses": False,
-            "week": 4,
-            "refresh": False,
-            "output": None,
-        }
-    ]
+
+@pytest.mark.asyncio
+async def test_menu_sends_multiple_weeks_as_one_sync(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    course = Course(1, "FIT2001", "Current unit")
+    selections = iter([course, None])
+    synced: list[list[int] | None] = []
+    monkeypatch.setattr(cli, "_prompt_course_selection", lambda _courses: next(selections))
+    monkeypatch.setattr(cli, "_prompt_course_action", lambda _course: "week")
+    monkeypatch.setattr(cli, "_prompt_weeks", lambda _course: [3, 7, 8])
+
+    async def load_course(selected: Course) -> Course:
+        return selected
+
+    async def sync_course(_course: Course, weeks: list[int] | None) -> None:
+        synced.append(weeks)
+
+    await cli._menu_loop([course], load_course=load_course, sync_course=sync_course)
+
+    assert synced == [[3, 7, 8]]
+
+
+@pytest.mark.asyncio
+async def test_menu_returns_after_a_recoverable_sync_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    course = Course(1, "FIT2001", "Current unit")
+    selections = iter([course, None])
+    monkeypatch.setattr(cli, "_prompt_course_selection", lambda _courses: next(selections))
+    monkeypatch.setattr(cli, "_prompt_course_action", lambda _course: "course")
+
+    async def load_course(selected: Course) -> Course:
+        return selected
+
+    async def sync_course(_course: Course, _weeks: list[int] | None) -> None:
+        raise MoodleApiError("Temporary problem")
+
+    await cli._menu_loop([course], load_course=load_course, sync_course=sync_course)
+
+
+def test_prompt_weeks_retries_locally_and_supports_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    course = Course(
+        1,
+        "FIT2001",
+        "Current unit",
+        sections=[
+            Section(10, 10, "Week 0 - Orientation"),
+            Section(20, 20, "Week 2 - Types"),
+            Section(30, 30, "Week 3 - More types"),
+        ],
+    )
+    responses = iter(["letters", "100", "0,2-3"])
+    monkeypatch.setattr(typer, "prompt", lambda *_args, **_kwargs: next(responses))
+
+    assert cli._prompt_weeks(course) == [0, 2, 3]
+
+    monkeypatch.setattr(typer, "prompt", lambda *_args, **_kwargs: "b")
+    assert cli._prompt_weeks(course) is None
