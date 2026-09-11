@@ -7,8 +7,8 @@ The project is being built around a browser-authenticated Monash session and Moo
 services. Course downloads, browser profiles, cookies, local databases, and temporary files are
 kept outside Git.
 
-> Status: the repository currently contains the Stage 1 project structure and command interface.
-> Moodle login, discovery, parsing, and downloads are added in later stages.
+> Status: browser login, session checks, and Moodle AJAX course discovery are implemented.
+> Course-page parsing and downloads are added in later stages.
 
 ## Requirements
 
@@ -24,7 +24,7 @@ uv sync --all-groups
 uv run mmd --help
 ```
 
-## Planned commands
+## Commands
 
 ```console
 mmd login
@@ -37,8 +37,13 @@ mmd sync --all
 mmd sync --course FIT2014 --refresh
 ```
 
-The normal `sync` command will require either one course or the explicit `--all` option. The
-default material directory will be `~/Desktop/Monash Moodle Downloads`.
+`login`, `doctor`, and `courses` are available now. The `scan` and `sync` interfaces are present
+but remain disconnected until the parsing and download stages. The normal `sync` command requires
+either one course or the explicit `--all` option. The default material directory is
+`~/Desktop/Monash Moodle Downloads`.
+
+The login command opens a dedicated Chrome profile. Complete Monash SSO and MFA in that browser
+window; the CLI never asks for credentials. Later non-interactive commands reuse the saved profile.
 
 ## Development checks
 

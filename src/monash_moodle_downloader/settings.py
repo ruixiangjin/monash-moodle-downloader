@@ -14,6 +14,7 @@ class Settings:
 
     output_root: Path
     state_root: Path
+    moodle_base_url: str = "https://learning.monash.edu"
 
     @classmethod
     def default(cls, *, home: Path | None = None) -> Settings:
@@ -27,6 +28,10 @@ class Settings:
     @property
     def browser_profile(self) -> Path:
         return self.state_root / "playwright-profile"
+
+    @property
+    def storage_state(self) -> Path:
+        return self.state_root / "moodle-storage-state.json"
 
     @property
     def database(self) -> Path:

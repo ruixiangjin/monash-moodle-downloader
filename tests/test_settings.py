@@ -9,3 +9,4 @@ def test_default_output_is_outside_the_repository() -> None:
     assert settings.output_root == Path("/Users/example/Desktop/Monash Moodle Downloads")
     assert settings.database.name == "state.sqlite3"
     assert settings.browser_profile.name == "playwright-profile"
+    assert settings.storage_state.name == "moodle-storage-state.json"

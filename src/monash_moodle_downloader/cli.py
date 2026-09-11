@@ -1,11 +1,17 @@
 """Command-line interface for Monash Moodle Downloader."""
 
+import asyncio
+from collections.abc import Coroutine
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
+from rich.table import Table
 
+from monash_moodle_downloader.errors import MmdError
+from monash_moodle_downloader.moodle import MoodleAjaxClient
+from monash_moodle_downloader.session import BrowserSession
 from monash_moodle_downloader.settings import Settings
 
 app = typer.Typer(
@@ -23,26 +29,75 @@ def _planned(command: str) -> None:
     )
 
 
+def _run[T](awaitable: Coroutine[Any, Any, T]) -> T:
+    try:
+        return asyncio.run(awaitable)
+    except MmdError as error:
+        console.print(f"[red]Error:[/red] {error}")
+        raise typer.Exit(code=1) from error
+
+
 @app.command()
-def login() -> None:
+def login(
+    timeout: Annotated[
+        int,
+        typer.Option("--timeout", min=30, help="Seconds to wait for browser login."),
+    ] = 600,
+) -> None:
     """Open the browser login flow for Monash SSO and MFA."""
-    _planned("login")
+    _run(_login(timeout))
+
+
+async def _login(timeout: int) -> None:
+    settings = Settings.default()
+    console.print("Opening Chrome. Complete Monash SSO/MFA only in the browser window.")
+    async with BrowserSession(settings, headless=False) as session:
+        await session.open_moodle()
+        status = await session.wait_for_login(timeout_seconds=timeout)
+    console.print(f"[green]{status.message}[/green]")
 
 
 @app.command()
 def doctor() -> None:
     """Check local requirements, session state, and Moodle connectivity."""
+    _run(_doctor())
+
+
+async def _doctor() -> None:
     settings = Settings.default()
-    console.print("Project structure: [green]ready[/green]")
+    console.print("Python project: [green]ready[/green]")
     console.print(f"Default output: {settings.output_root}")
     console.print(f"Private state: {settings.state_root}")
-    _planned("doctor")
+    async with BrowserSession(settings, headless=True) as session:
+        status = await session.status()
+    console.print("Google Chrome: [green]available[/green]")
+    colour = "green" if status.authenticated else "yellow"
+    console.print(f"Moodle session: [{colour}]{status.message}[/{colour}]")
+    if not status.authenticated:
+        console.print("Run `mmd login` to create or renew the saved session.")
 
 
 @app.command()
 def courses() -> None:
     """List courses visible to the authenticated Moodle account."""
-    _planned("courses")
+    _run(_courses())
+
+
+async def _courses() -> None:
+    settings = Settings.default()
+    async with BrowserSession(settings, headless=True) as session:
+        await session.ensure_authenticated()
+        client = MoodleAjaxClient(session.page, base_url=settings.moodle_base_url)
+        visible_courses = await client.list_courses()
+
+    table = Table(title="Visible Moodle courses")
+    table.add_column("Code", style="cyan", no_wrap=True)
+    table.add_column("Moodle ID", justify="right")
+    table.add_column("Course name")
+    table.add_column("Visible", justify="center")
+    for course in visible_courses:
+        table.add_row(course.code, str(course.id), course.name, "yes" if course.visible else "no")
+    console.print(table)
 
 
 @app.command()
