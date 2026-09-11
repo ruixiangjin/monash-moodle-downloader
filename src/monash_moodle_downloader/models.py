@@ -113,12 +113,13 @@ class Section:
 
 @dataclass(slots=True)
 class Course:
-    """A course visible to the authenticated user."""
+    """A course available to the user, including dashboard-hidden courses."""
 
     id: int
     code: str
     name: str
     visible: bool = True
+    removed_from_view: bool = False
     end_date: int | None = None
     sections: list[Section] = field(default_factory=list)
 

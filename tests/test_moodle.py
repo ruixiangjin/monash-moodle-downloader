@@ -20,7 +20,14 @@ class FakePage:
         request = cast(dict[str, Any], argument)
         payload = request["payload"][0]
         method = payload["methodname"]
-        body = [{"error": False, "data": self.responses[method]}]
+        response = self.responses[method]
+        if (
+            method == "core_course_get_enrolled_courses_by_timeline_classification"
+            and isinstance(response, dict)
+            and "all" in response
+        ):
+            response = response[payload["args"]["classification"]]
+        body = [{"error": False, "data": response}]
         return {"ok": True, "status": 200, "body": json.dumps(body)}
 
 
@@ -62,6 +69,18 @@ COURSES = {
     ]
 }
 
+REMOVED_COURSES = {
+    "courses": [
+        {
+            "id": 34987,
+            "fullname": "FIT1045 Introduction to programming - S2 2025",
+            "shortname": "FIT1045_S2_2025",
+            "visible": True,
+            "enddate": 1750000000,
+        }
+    ]
+}
+
 
 @pytest.mark.asyncio
 async def test_list_courses_extracts_codes_and_sorts() -> None:
@@ -71,6 +90,47 @@ async def test_list_courses_extracts_codes_and_sorts() -> None:
 
     assert [course.code for course in courses] == ["ETW2001", "FIT2014", "FIT2102", "FIT2109"]
     assert courses[1].id == 44553
+
+
+@pytest.mark.asyncio
+async def test_list_courses_includes_and_marks_removed_courses() -> None:
+    responses: dict[str, object] = {
+        "core_course_get_enrolled_courses_by_timeline_classification": {
+            "all": COURSES,
+            "hidden": REMOVED_COURSES,
+        }
+    }
+    moodle = client(responses)
+
+    all_courses = await moodle.list_courses(include_removed=True)
+    current_courses = await moodle.list_courses(include_removed=False)
+
+    assert [course.code for course in current_courses] == [
+        "ETW2001",
+        "FIT2014",
+        "FIT2102",
+        "FIT2109",
+    ]
+    removed = next(course for course in all_courses if course.code == "FIT1045")
+    assert removed.removed_from_view is True
+    assert all(not course.removed_from_view for course in current_courses)
+
+
+@pytest.mark.asyncio
+async def test_resolve_course_can_select_removed_course_by_id() -> None:
+    moodle = client(
+        {
+            "core_course_get_enrolled_courses_by_timeline_classification": {
+                "all": COURSES,
+                "hidden": REMOVED_COURSES,
+            }
+        }
+    )
+
+    course = await moodle.resolve_course("34987")
+
+    assert course.code == "FIT1045"
+    assert course.removed_from_view is True
 
 
 @pytest.mark.asyncio

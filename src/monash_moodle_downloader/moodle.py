@@ -78,14 +78,28 @@ class MoodleAjaxClient:
             raise MoodleApiError(f"Moodle returned no data for {method}.")
         return response["data"]
 
-    async def list_courses(self) -> list[Course]:
-        """Return courses visible to the authenticated Moodle account."""
+    async def list_courses(self, *, include_removed: bool = True) -> list[Course]:
+        """Return dashboard courses, optionally including items removed from view."""
+        current = await self._list_courses_by_classification("all")
+        if not include_removed:
+            return current
+
+        removed = await self._list_courses_by_classification("hidden")
+        for course in removed:
+            course.removed_from_view = True
+
+        by_id = {course.id: course for course in current}
+        for course in removed:
+            by_id.setdefault(course.id, course)
+        return sorted(by_id.values(), key=lambda course: (course.code, course.name, course.id))
+
+    async def _list_courses_by_classification(self, classification: str) -> list[Course]:
         data = await self.call(
             COURSE_LIST_METHOD,
             {
                 "offset": 0,
                 "limit": 0,
-                "classification": "all",
+                "classification": classification,
                 "sort": "fullname",
                 "customfieldname": "",
                 "customfieldvalue": "",
@@ -103,11 +117,11 @@ class MoodleAjaxClient:
         mapping = _as_mapping(data, "course list")
         records = _as_sequence(mapping.get("courses"), "course records")
         courses = [_course_from_record(_as_mapping(record, "course")) for record in records]
-        return sorted(courses, key=lambda course: (course.code, course.name))
+        return sorted(courses, key=lambda course: (course.code, course.name, course.id))
 
     async def resolve_course(self, selector: str) -> Course:
         """Resolve an exact course code or numeric Moodle course ID."""
-        courses = await self.list_courses()
+        courses = await self.list_courses(include_removed=True)
         normalised = selector.strip().casefold()
         matches = [
             course
@@ -118,10 +132,10 @@ class MoodleAjaxClient:
             return matches[0]
         if not matches:
             raise CourseNotFoundError(
-                f"No visible Moodle course matches {selector!r}. Run `mmd courses` to list choices."
+                f"No Moodle course matches {selector!r}. Run `mmd courses` to list choices."
             )
         raise CourseNotFoundError(
-            f"More than one visible course matches {selector!r}; use its numeric Moodle ID."
+            f"More than one Moodle course matches {selector!r}; use its numeric Moodle ID."
         )
 
     async def get_course_state(self, course: Course) -> Course:

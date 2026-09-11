@@ -13,6 +13,7 @@ from monash_moodle_downloader.cache import ResourceCache
 from monash_moodle_downloader.content import CourseContentScanner
 from monash_moodle_downloader.downloader import ResourceDownloader, SyncCounts
 from monash_moodle_downloader.errors import MmdError
+from monash_moodle_downloader.models import Course
 from monash_moodle_downloader.moodle import MoodleAjaxClient
 from monash_moodle_downloader.output import write_scan_output
 from monash_moodle_downloader.session import BrowserSession
@@ -76,7 +77,7 @@ async def _doctor() -> None:
 
 @app.command()
 def courses() -> None:
-    """List courses visible to the authenticated Moodle account."""
+    """List current and removed-from-view Moodle courses."""
     _run(_courses())
 
 
@@ -87,14 +88,121 @@ async def _courses() -> None:
         client = MoodleAjaxClient(session.page, base_url=settings.moodle_base_url)
         visible_courses = await client.list_courses()
 
-    table = Table(title="Visible Moodle courses")
+    current = [course for course in visible_courses if not course.removed_from_view]
+    removed = [course for course in visible_courses if course.removed_from_view]
+    _print_course_table("Current courses", current)
+    _print_course_table("Removed from view", removed)
+
+
+def _print_course_table(title: str, courses_to_show: list[Course]) -> None:
+    table = Table(title=title)
     table.add_column("Code", style="cyan", no_wrap=True)
     table.add_column("Moodle ID", justify="right")
     table.add_column("Course name")
-    table.add_column("Visible", justify="center")
-    for course in visible_courses:
-        table.add_row(course.code, str(course.id), course.name, "yes" if course.visible else "no")
+    for course in courses_to_show:
+        table.add_row(course.code, str(course.id), course.name)
+    if not courses_to_show:
+        table.add_row("—", "—", "No courses")
     console.print(table)
+
+
+@app.command()
+def menu() -> None:
+    """Open an interactive terminal menu for course synchronisation."""
+    while True:
+        courses_to_show = _run(_load_menu_courses())
+        selection = _prompt_course_selection(courses_to_show)
+        if selection is None:
+            console.print("No changes were made.")
+            return
+        if isinstance(selection, str):
+            _run(
+                _sync(
+                    course_selector=None,
+                    all_courses=True,
+                    week=None,
+                    refresh=False,
+                    output=None,
+                )
+            )
+            return
+
+        action = _prompt_course_action(selection)
+        if action is None:
+            continue
+        week = _prompt_week() if action == "week" else None
+        _run(
+            _sync(
+                course_selector=str(selection.id),
+                all_courses=False,
+                week=week,
+                refresh=False,
+                output=None,
+            )
+        )
+        return
+
+
+async def _load_menu_courses() -> list[Course]:
+    settings = Settings.default()
+    async with BrowserSession(settings, headless=True) as session:
+        await session.ensure_authenticated()
+        client = MoodleAjaxClient(session.page, base_url=settings.moodle_base_url)
+        return await client.list_courses(include_removed=True)
+
+
+def _prompt_course_selection(courses_to_show: list[Course]) -> Course | str | None:
+    current = [course for course in courses_to_show if not course.removed_from_view]
+    removed = [course for course in courses_to_show if course.removed_from_view]
+    console.print("\n[bold]What would you like to update?[/bold]")
+    console.print("  [cyan]1[/cyan]  All current courses")
+    numbered: dict[int, Course] = {}
+    next_number = 2
+    console.print("\n[bold]Current courses[/bold]")
+    for course in current:
+        numbered[next_number] = course
+        console.print(f"  [cyan]{next_number}[/cyan]  {course.code} — {course.name}")
+        next_number += 1
+    console.print("\n[bold]Removed from view[/bold]")
+    for course in removed:
+        numbered[next_number] = course
+        console.print(f"  [cyan]{next_number}[/cyan]  {course.code} — {course.name}")
+        next_number += 1
+    console.print("\n  [cyan]0[/cyan]  Exit")
+
+    while True:
+        choice = typer.prompt("Enter a number", type=int)
+        if choice == 0:
+            return None
+        if choice == 1:
+            return "all"
+        if choice in numbered:
+            return numbered[choice]
+        console.print("[yellow]Choose one of the numbers shown above.[/yellow]")
+
+
+def _prompt_course_action(course: Course) -> str | None:
+    console.print(f"\n[bold]{course.code} — {course.name}[/bold]")
+    console.print("  [cyan]1[/cyan]  Update the entire course")
+    console.print("  [cyan]2[/cyan]  Update one specific week")
+    console.print("  [cyan]0[/cyan]  Back to course selection")
+    while True:
+        choice = typer.prompt("Enter a number", type=int)
+        if choice == 0:
+            return None
+        if choice == 1:
+            return "course"
+        if choice == 2:
+            return "week"
+        console.print("[yellow]Choose 0, 1, or 2.[/yellow]")
+
+
+def _prompt_week() -> int:
+    while True:
+        week = int(typer.prompt("Enter the week number", type=int))
+        if week > 0:
+            return week
+        console.print("[yellow]Week must be a positive number.[/yellow]")
 
 
 @app.command()
@@ -141,7 +249,10 @@ def sync(
     ] = None,
     all_courses: Annotated[
         bool,
-        typer.Option("--all", help="Synchronise every currently visible course."),
+        typer.Option(
+            "--all",
+            help="Synchronise every current course, excluding Remove from view.",
+        ),
     ] = False,
     week: Annotated[int | None, typer.Option("--week", min=1)] = None,
     refresh: Annotated[
@@ -181,7 +292,7 @@ async def _sync(
         await session.ensure_authenticated()
         client = MoodleAjaxClient(session.page, base_url=settings.moodle_base_url)
         if all_courses:
-            courses_to_sync = await client.list_courses()
+            courses_to_sync = await client.list_courses(include_removed=False)
         else:
             assert course_selector is not None
             courses_to_sync = [await client.resolve_course(course_selector)]

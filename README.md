@@ -36,11 +36,29 @@ Use `uv run mmd ...` from the repository, or run `uv tool install .` once if you
 uv run mmd login
 uv run mmd doctor
 uv run mmd courses
+uv run mmd menu
 ```
 
 `login` opens a dedicated Chrome window. Complete Monash SSO and MFA only in that window. The tool
 never accepts your password or verification code. If a later command reports that the session has
 expired, run `mmd login` again.
+
+`courses` and `menu` show two groups: courses currently displayed on the Moodle dashboard and
+courses previously marked **Remove from view**. A removed course can still be selected explicitly.
+
+## Interactive terminal menu
+
+Run `uv run mmd menu`, or double-click `Monash Moodle Downloader.command` in Finder. The launcher
+finds the repository from its own location, so it contains no user-specific path.
+
+The menu provides these choices:
+
+1. Incrementally update every current (not removed-from-view) course.
+2. Select one current or removed-from-view course, then update the entire course.
+3. Select one course, then enter a positive Week number to update only that Week.
+
+The menu performs the same incremental sync as the command-line options. It does not automatically
+include removed-from-view courses in the “all current courses” operation.
 
 ## Scan and synchronise
 
@@ -52,7 +70,7 @@ uv run mmd scan --course FIT2014
 uv run mmd sync --course FIT2014
 uv run mmd sync --course FIT2102 --week 3
 
-# Synchronise every course currently returned by Moodle
+# Synchronise every current course, excluding Remove from view
 uv run mmd sync --all
 
 # Ignore remote metadata and fetch file bodies again
