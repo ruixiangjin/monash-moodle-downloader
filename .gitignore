@@ -1,0 +1,52 @@
+# macOS and editor files
+.DS_Store
+.vscode/
+.idea/
+
+# Dependencies and logs
+node_modules/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+*.log
+
+# Environment variables and credentials
+.env
+.env.*
+!.env.example
+**/*storage-state*.json
+**/*-storage-state.json
+
+# Browser profiles and authenticated sessions
+**/*-browser-profile/
+**/.moodle-browser-profile/
+**/.ed-reader/
+**/user-data-dir/
+**/playwright-profile/
+
+# Local caches
+**/.cache/
+**/cache/
+**/sync-cache.json
+**/download-cache.json
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.part
+
+# Downloaded course content
+**/downloads/
+**/downloaded-content/
+**/course-content/
+**/outputs/
+**/output/
+Monash Moodle Downloads/
