@@ -87,12 +87,26 @@ async def test_resolve_course_accepts_code_or_id() -> None:
 async def test_course_state_maps_sections_and_activity_types() -> None:
     state = {
         "section": [
-            {"id": 10, "section": 0, "title": "General", "visible": 1},
-            {"id": 11, "section": 1, "title": "Week 1", "visible": 1},
+            {
+                "id": 10,
+                "section": 0,
+                "title": "General",
+                "visible": 1,
+                "parent": 0,
+                "sectionurl": "https://learning.monash.edu/course/view.php?id=7&section=0",
+            },
+            {"id": 11, "section": 1, "title": "Week 1", "visible": 1, "parent": 0},
         ],
         "cm": [
             {"id": 100, "name": "Welcome", "modname": "label", "sectionid": 10},
-            {"id": 101, "name": "Lecture notes", "modname": "resource", "sectionid": 11},
+            {
+                "id": 101,
+                "name": "Lecture notes",
+                "modname": "File",
+                "module": "resource",
+                "sectionid": 11,
+                "url": "https://learning.monash.edu/mod/resource/view.php?id=101",
+            },
             {"id": 102, "name": "Quiz", "modname": "quiz", "sectionid": 11},
         ],
     }
@@ -107,6 +121,8 @@ async def test_course_state_maps_sections_and_activity_types() -> None:
     populated = await moodle.get_course_state(course)
 
     assert [section.title for section in populated.sections] == ["General", "Week 1"]
+    assert populated.sections[0].parent_number == 0
+    assert populated.sections[1].activities[0].source_url is not None
     assert [item.activity_type for item in populated.sections[1].activities] == [
         ActivityType.FILE,
         ActivityType.QUIZ,

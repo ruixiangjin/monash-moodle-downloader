@@ -9,8 +9,10 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from monash_moodle_downloader.content import CourseContentScanner
 from monash_moodle_downloader.errors import MmdError
 from monash_moodle_downloader.moodle import MoodleAjaxClient
+from monash_moodle_downloader.output import write_scan_output
 from monash_moodle_downloader.session import BrowserSession
 from monash_moodle_downloader.settings import Settings
 
@@ -107,11 +109,33 @@ def scan(
     output: Annotated[Path | None, typer.Option("--output", file_okay=False)] = None,
 ) -> None:
     """Inspect one course without downloading its resources."""
-    target = f"{course}, week {week}" if week is not None else course
-    console.print(f"Scan target: {target}")
-    if output is not None:
-        console.print(f"Output override: {output}")
-    _planned("scan")
+    _run(_scan(course, week=week, output=output))
+
+
+async def _scan(course_selector: str, *, week: int | None, output: Path | None) -> None:
+    settings = Settings.default()
+    output_root = output if output is not None else settings.output_root
+    async with BrowserSession(settings, headless=True) as session:
+        await session.ensure_authenticated()
+        client = MoodleAjaxClient(session.page, base_url=settings.moodle_base_url)
+        course = await client.resolve_course(course_selector)
+        course = await client.get_course_state(course)
+        scanner = CourseContentScanner(session.page, base_url=settings.moodle_base_url)
+        manifest = await scanner.scan(course, week=week)
+
+    destination = write_scan_output(manifest, output_root)
+    activities = [
+        activity for section in manifest.course.sections for activity in section.activities
+    ]
+    resources = sum(len(activity.resources) for activity in activities)
+    links = sum(len(activity.external_links) for activity in activities)
+    console.print(f"[green]Scan complete:[/green] {manifest.course.code}")
+    console.print(f"Sections: {len(manifest.course.sections)}")
+    console.print(f"Activities: {len(activities)}")
+    console.print(f"File candidates: {resources}")
+    console.print(f"Recorded links: {links}")
+    console.print(f"Output: {destination}")
+    console.print("No attachment bodies were downloaded.")
 
 
 @app.command()

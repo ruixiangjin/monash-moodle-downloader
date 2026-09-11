@@ -1,5 +1,9 @@
+from pathlib import Path
+
+import pytest
 from typer.testing import CliRunner
 
+from monash_moodle_downloader import cli
 from monash_moodle_downloader.cli import app
 
 runner = CliRunner()
@@ -30,8 +34,14 @@ def test_sync_rejects_week_with_all_courses() -> None:
     assert "--week cannot be combined with --all" in result.output
 
 
-def test_scan_accepts_course_and_week() -> None:
+def test_scan_accepts_course_and_week(monkeypatch: pytest.MonkeyPatch) -> None:
+    received: list[tuple[str, int | None, Path | None]] = []
+
+    async def fake_scan(course_selector: str, *, week: int | None, output: Path | None) -> None:
+        received.append((course_selector, week, output))
+
+    monkeypatch.setattr(cli, "_scan", fake_scan)
     result = runner.invoke(app, ["scan", "--course", "FIT2102", "--week", "3"])
 
     assert result.exit_code == 0
-    assert "FIT2102, week 3" in result.stdout
+    assert received == [("FIT2102", 3, None)]

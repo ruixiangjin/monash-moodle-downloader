@@ -34,7 +34,7 @@ def test_manifest_is_versioned_and_json_serialisable() -> None:
         sections=[Section(id=3, number=1, title="Week 1", activities=[activity])],
     )
 
-    data = SyncManifest(course=course, resources=[resource]).to_dict()
+    data = SyncManifest(course=course).to_dict()
     encoded = json.dumps(data)
 
     assert data["schema_version"] == 1

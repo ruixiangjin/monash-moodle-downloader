@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping, Sequence
+from html import unescape
 from typing import cast
 from urllib.parse import urlencode
 
@@ -146,7 +147,9 @@ class MoodleAjaxClient:
             section = Section(
                 id=section_id,
                 number=number,
-                title=title,
+                title=unescape(title),
+                parent_number=_optional_int(record.get("parent")),
+                source_url=_first_text(record, "sectionurl"),
                 visible=_visible(record),
             )
             sections.append(section)
@@ -164,12 +167,13 @@ class MoodleAjaxClient:
                 target_section = by_number.get(section_number)
             if target_section is None:
                 continue
-            modname = _first_text(record, "modname", "plugin") or "unknown"
+            modname = _first_text(record, "module", "plugin", "modname") or "unknown"
             activity = Activity(
                 id=_as_int(record.get("id"), "activity id"),
-                name=_first_text(record, "name") or "Untitled activity",
+                name=unescape(_first_text(record, "name") or "Untitled activity"),
                 activity_type=_activity_type(modname),
                 section_id=target_section.id,
+                source_url=_first_text(record, "url"),
                 visible=_visible(record),
             )
             target_section.activities.append(activity)
@@ -222,9 +226,11 @@ def _activity_type(modname: str) -> ActivityType:
     mapping = {
         "assign": ActivityType.ASSIGNMENT,
         "assignment": ActivityType.ASSIGNMENT,
+        "cms": ActivityType.CONTENT,
         "resource": ActivityType.FILE,
         "file": ActivityType.FILE,
         "folder": ActivityType.FOLDER,
+        "forum": ActivityType.FORUM,
         "h5pactivity": ActivityType.H5P,
         "h5p": ActivityType.H5P,
         "label": ActivityType.TEXT,

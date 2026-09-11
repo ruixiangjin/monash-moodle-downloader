@@ -12,9 +12,11 @@ class ActivityType(StrEnum):
     """Normalised Moodle activity categories used by parsers and manifests."""
 
     ASSIGNMENT = "assignment"
+    CONTENT = "content"
     EXTERNAL_TOOL = "external_tool"
     FILE = "file"
     FOLDER = "folder"
+    FORUM = "forum"
     H5P = "h5p"
     PAGE = "page"
     QUIZ = "quiz"
@@ -52,6 +54,7 @@ class Resource:
     last_modified: str | None = None
     sha256: str | None = None
     final_host: str | None = None
+    relative_path: str | None = None
 
 
 @dataclass(slots=True)
@@ -74,9 +77,11 @@ class Activity:
     name: str
     activity_type: ActivityType
     section_id: int
+    source_url: str | None = None
     visible: bool = True
     text_markdown: str | None = None
     text_hash: str | None = None
+    text_duplicate_of: int | None = None
     resources: list[Resource] = field(default_factory=list)
     external_links: list[ExternalLink] = field(default_factory=list)
 
@@ -88,6 +93,8 @@ class Section:
     id: int
     number: int
     title: str
+    parent_number: int | None = None
+    source_url: str | None = None
     visible: bool = True
     text_markdown: str | None = None
     text_hash: str | None = None
@@ -112,8 +119,6 @@ class SyncManifest:
 
     course: Course
     generated_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
-    resources: list[Resource] = field(default_factory=list)
-    external_links: list[ExternalLink] = field(default_factory=list)
     schema_version: int = field(default=1, init=False)
 
     def to_dict(self) -> dict[str, Any]:
