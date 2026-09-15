@@ -34,6 +34,7 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+MENU_LOGIN_TIMEOUT_SECONDS = 600
 
 
 def _run[T](awaitable: Coroutine[Any, Any, T]) -> T:
@@ -123,6 +124,7 @@ def menu() -> None:
 
 async def _menu() -> None:
     settings = Settings.default()
+    await _ensure_menu_authenticated(settings)
     async with BrowserSession(settings, headless=True) as session:
         await session.ensure_authenticated()
         client = MoodleAjaxClient(session.page, base_url=settings.moodle_base_url)
@@ -153,6 +155,19 @@ async def _menu() -> None:
                     load_course=client.get_course_state,
                     sync_course=sync_course,
                 )
+
+
+async def _ensure_menu_authenticated(settings: Settings) -> None:
+    """Open the interactive login flow when the menu has no saved session."""
+    async with BrowserSession(settings, headless=True) as session:
+        status = await session.status()
+    if status.authenticated:
+        return
+
+    console.print(
+        "[yellow]The saved Moodle session is missing or expired. Opening Chrome to log in.[/yellow]"
+    )
+    await _login(MENU_LOGIN_TIMEOUT_SECONDS)
 
 
 async def _menu_loop(

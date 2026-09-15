@@ -6,8 +6,9 @@ from typer.testing import CliRunner
 
 from monash_moodle_downloader import cli
 from monash_moodle_downloader.cli import app
-from monash_moodle_downloader.errors import MoodleApiError
+from monash_moodle_downloader.errors import LoginRequiredError, MoodleApiError
 from monash_moodle_downloader.models import Course, Section
+from monash_moodle_downloader.settings import Settings
 
 runner = CliRunner()
 
@@ -82,21 +83,103 @@ def menu_courses() -> list[Course]:
 
 
 @pytest.mark.asyncio
+async def test_menu_login_check_keeps_authenticated_session_headless(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class FakeSession:
+        def __init__(self, _settings: object, *, headless: bool) -> None:
+            events.append(f"start:{headless}")
+
+        async def __aenter__(self) -> "FakeSession":
+            events.append("enter")
+            return self
+
+        async def __aexit__(self, *_exc_info: object) -> None:
+            events.append("exit")
+
+        async def status(self) -> object:
+            events.append("status")
+            return type("Status", (), {"authenticated": True})()
+
+    async def fake_login(_timeout: int) -> None:
+        events.append("login")
+
+    monkeypatch.setattr(cli, "BrowserSession", FakeSession)
+    monkeypatch.setattr(cli, "_login", fake_login)
+
+    await cli._ensure_menu_authenticated(Settings.default())
+
+    assert events == ["start:True", "enter", "status", "exit"]
+
+
+@pytest.mark.asyncio
+async def test_menu_login_check_closes_headless_session_before_opening_login(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class FakeSession:
+        def __init__(self, _settings: object, *, headless: bool) -> None:
+            events.append(f"start:{headless}")
+
+        async def __aenter__(self) -> "FakeSession":
+            events.append("enter")
+            return self
+
+        async def __aexit__(self, *_exc_info: object) -> None:
+            events.append("exit")
+
+        async def status(self) -> object:
+            events.append("status")
+            return type("Status", (), {"authenticated": False})()
+
+    async def fake_login(timeout: int) -> None:
+        events.append(f"login:{timeout}")
+
+    monkeypatch.setattr(cli, "BrowserSession", FakeSession)
+    monkeypatch.setattr(cli, "_login", fake_login)
+
+    await cli._ensure_menu_authenticated(Settings.default())
+
+    assert events == ["start:True", "enter", "status", "exit", "login:600"]
+
+
+@pytest.mark.asyncio
+async def test_menu_stops_when_automatic_login_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def failed_login_check(_settings: object) -> None:
+        raise LoginRequiredError("Login window closed")
+
+    class UnexpectedMenuSession:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pytest.fail("The menu session must not start after a failed login")
+
+    monkeypatch.setattr(cli, "_ensure_menu_authenticated", failed_login_check)
+    monkeypatch.setattr(cli, "BrowserSession", UnexpectedMenuSession)
+
+    with pytest.raises(LoginRequiredError, match="Login window closed"):
+        await cli._menu()
+
+
+@pytest.mark.asyncio
 async def test_menu_updates_current_courses_then_stays_open(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     courses = menu_courses()
     selections = iter(["all", None])
     loaded: list[int] = []
-    synced: list[tuple[int, list[int] | None]] = []
+    synced: list[tuple[int, cli.MenuScope]] = []
     monkeypatch.setattr(cli, "_prompt_course_selection", lambda _courses: next(selections))
 
     async def load_course(course: Course) -> Course:
         loaded.append(course.id)
         return course
 
-    async def sync_course(course: Course, weeks: list[int] | None) -> None:
-        synced.append((course.id, weeks))
+    async def sync_course(course: Course, scope: cli.MenuScope) -> None:
+        synced.append((course.id, scope))
 
     await cli._menu_loop(courses, load_course=load_course, sync_course=sync_course)
 
@@ -120,7 +203,7 @@ async def test_menu_runs_two_week_operations_before_manual_exit(
     selections = iter([course, course, None])
     actions = iter(["week", "week"])
     week_choices = iter([[1], [2]])
-    synced: list[list[int] | None] = []
+    synced: list[cli.MenuScope] = []
     monkeypatch.setattr(cli, "_prompt_course_selection", lambda _courses: next(selections))
     monkeypatch.setattr(cli, "_prompt_course_action", lambda _course: next(actions))
     monkeypatch.setattr(cli, "_prompt_weeks", lambda _course: next(week_choices))
@@ -128,8 +211,8 @@ async def test_menu_runs_two_week_operations_before_manual_exit(
     async def load_course(selected: Course) -> Course:
         return selected
 
-    async def sync_course(_course: Course, weeks: list[int] | None) -> None:
-        synced.append(weeks)
+    async def sync_course(_course: Course, scope: cli.MenuScope) -> None:
+        synced.append(scope)
 
     await cli._menu_loop([course], load_course=load_course, sync_course=sync_course)
 
@@ -142,7 +225,7 @@ async def test_menu_sends_multiple_weeks_as_one_sync(
 ) -> None:
     course = Course(1, "FIT2001", "Current unit")
     selections = iter([course, None])
-    synced: list[list[int] | None] = []
+    synced: list[cli.MenuScope] = []
     monkeypatch.setattr(cli, "_prompt_course_selection", lambda _courses: next(selections))
     monkeypatch.setattr(cli, "_prompt_course_action", lambda _course: "week")
     monkeypatch.setattr(cli, "_prompt_weeks", lambda _course: [3, 7, 8])
@@ -150,8 +233,8 @@ async def test_menu_sends_multiple_weeks_as_one_sync(
     async def load_course(selected: Course) -> Course:
         return selected
 
-    async def sync_course(_course: Course, weeks: list[int] | None) -> None:
-        synced.append(weeks)
+    async def sync_course(_course: Course, scope: cli.MenuScope) -> None:
+        synced.append(scope)
 
     await cli._menu_loop([course], load_course=load_course, sync_course=sync_course)
 
@@ -189,7 +272,7 @@ async def test_menu_returns_after_a_recoverable_sync_error(
     async def load_course(selected: Course) -> Course:
         return selected
 
-    async def sync_course(_course: Course, _weeks: list[int] | None) -> None:
+    async def sync_course(_course: Course, _scope: cli.MenuScope) -> None:
         raise MoodleApiError("Temporary problem")
 
     await cli._menu_loop([course], load_course=load_course, sync_course=sync_course)

@@ -1,3 +1,5 @@
+[**English**](README.md) | [简体中文](README.zh-CN.md)
+
 # Monash Moodle Downloader
 
 A Python command-line tool that saves authorised Monash Moodle course text and non-media files for
@@ -40,8 +42,8 @@ uv run mmd menu
 ```
 
 `login` opens a dedicated Chrome window. Complete Monash SSO and MFA only in that window. The tool
-never accepts your password or verification code. If a later command reports that the session has
-expired, run `mmd login` again.
+never accepts your password or verification code. You can run `mmd login` whenever you want to
+create or renew the saved session.
 
 `courses` and `menu` show two groups: courses currently displayed on the Moodle dashboard and
 courses previously marked **Remove from view**. A removed course can still be selected explicitly.
@@ -49,7 +51,9 @@ courses previously marked **Remove from view**. A removed course can still be se
 ## Interactive terminal menu
 
 Run `uv run mmd menu`, or double-click `Monash Moodle Downloader.command` in Finder. The launcher
-finds the repository from its own location, so it contains no user-specific path.
+finds the repository from its own location, so it contains no user-specific path. If the saved
+session is missing or expired, the menu automatically opens Chrome for Monash SSO/MFA and continues
+after login succeeds.
 
 The menu provides these choices:
 
@@ -135,7 +139,8 @@ data. Only access material that your own Monash account is authorised to use.
 
 ## Troubleshooting
 
-- **Login required:** run `uv run mmd login`, finish SSO/MFA, then retry.
+- **Login required:** `menu` opens Chrome automatically. For other commands, run
+  `uv run mmd login`, finish SSO/MFA, then retry.
 - **Course not found:** run `uv run mmd courses` and use the displayed code or numeric ID.
 - **A link is recorded but not downloaded:** it is likely HTML, media, Canva, Panopto, H5P, or an
   external page requiring another login. This is intentional in the first version.
