@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -35,7 +36,8 @@ def test_sync_rejects_week_with_all_courses() -> None:
     result = runner.invoke(app, ["sync", "--all", "--week", "2"])
 
     assert result.exit_code != 0
-    assert "--week cannot be combined with --all" in result.output
+    plain_output = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", result.output)
+    assert "--week cannot be combined with --all" in plain_output
 
 
 def test_sync_passes_options_to_async_implementation(monkeypatch: pytest.MonkeyPatch) -> None:
