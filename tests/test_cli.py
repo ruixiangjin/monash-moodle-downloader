@@ -75,6 +75,28 @@ def test_scan_accepts_course_and_week(monkeypatch: pytest.MonkeyPatch) -> None:
     assert received == [("FIT2102", 3, None)]
 
 
+def test_scan_and_sync_accept_week_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    scanned: list[int | None] = []
+    synced: list[int | None] = []
+
+    async def fake_scan(_course: str, *, week: int | None, output: Path | None) -> None:
+        scanned.append(week)
+
+    async def fake_sync(**options: object) -> None:
+        value = options["week"]
+        synced.append(value if isinstance(value, int) else None)
+
+    monkeypatch.setattr(cli, "_scan", fake_scan)
+    monkeypatch.setattr(cli, "_sync", fake_sync)
+    scan_result = runner.invoke(app, ["scan", "--course", "FIT2102", "--week", "0"])
+    sync_result = runner.invoke(app, ["sync", "--course", "FIT2102", "--week", "0"])
+
+    assert scan_result.exit_code == 0
+    assert sync_result.exit_code == 0
+    assert scanned == [0]
+    assert synced == [0]
+
+
 def menu_courses() -> list[Course]:
     return [
         Course(1, "FIT2001", "Current unit"),

@@ -24,6 +24,7 @@ from monash_moodle_downloader.models import (
     SyncManifest,
 )
 from monash_moodle_downloader.output import safe_component, write_scan_output
+from monash_moodle_downloader.progress import ProgressUpdate
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -129,8 +130,20 @@ async def test_scan_extracts_text_files_links_and_deduplicates() -> None:
     }
     page = cast(Page, cast(Any, FakePage(responses)))
 
-    manifest = await CourseContentScanner(page, base_url=base).scan(sample_course())
+    updates: list[ProgressUpdate] = []
+    manifest = await CourseContentScanner(page, base_url=base).scan(
+        sample_course(), progress=updates.append
+    )
 
+    assert any(
+        update.phase == "pages" and update.finished and update.completed for update in updates
+    )
+    assert any(
+        update.phase == "activities"
+        and update.finished
+        and update.completed == sum(len(section.activities) for section in manifest.course.sections)
+        for update in updates
+    )
     week, own_time, assessments = manifest.course.sections
     assert "Decorative banner" not in (week.activities[0].text_markdown or "")
     assert "collapseOverviewSection" not in (week.activities[0].text_markdown or "")

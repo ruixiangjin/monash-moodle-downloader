@@ -31,6 +31,7 @@ from monash_moodle_downloader.models import (
     SyncManifest,
 )
 from monash_moodle_downloader.output import course_directory_for, resource_relative_path
+from monash_moodle_downloader.progress import ProgressCallback, ProgressUpdate, ignore_progress
 
 REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 MEDIA_MIME_PREFIXES = ("audio/", "font/", "image/", "video/")
@@ -158,16 +159,30 @@ class ResourceDownloader:
         if self.owns_client:
             await self.client.aclose()
 
-    async def sync(self, manifest: SyncManifest, *, refresh: bool = False) -> SyncCounts:
+    async def sync(
+        self,
+        manifest: SyncManifest,
+        *,
+        refresh: bool = False,
+        progress: ProgressCallback = ignore_progress,
+    ) -> SyncCounts:
         """Download each unique non-media resource and copy results to duplicate references."""
+        progress(ProgressUpdate("external-links", "Checking external file links"))
         await self._promote_external_files(manifest.course)
+        progress(ProgressUpdate("external-links", "Checking external file links", finished=True))
         grouped: dict[str, list[tuple[Section, Activity, Resource]]] = defaultdict(list)
         for section, activity, resource in iter_resources(manifest.course):
             grouped[normalise_url(resource.source_url)].append((section, activity, resource))
 
         counts = SyncCounts()
+        resource_total = len(grouped)
+        completed_resources = 0
+        progress(
+            ProgressUpdate("resources", "Checking resources", completed=0, total=resource_total)
+        )
 
         async def handle(items: list[tuple[Section, Activity, Resource]]) -> None:
+            nonlocal completed_resources
             section, activity, primary = items[0]
             async with self.semaphore:
                 await self._sync_one(
@@ -180,8 +195,24 @@ class ResourceDownloader:
             for _, _, duplicate in items[1:]:
                 copy_resource_result(primary, duplicate)
             counts.add(primary.status)
+            completed_resources += 1
+            progress(
+                ProgressUpdate(
+                    "resources",
+                    "Checking resources",
+                    completed=completed_resources,
+                    total=resource_total,
+                    finished=completed_resources == resource_total,
+                )
+            )
 
         await asyncio.gather(*(handle(items) for items in grouped.values()))
+        if resource_total == 0:
+            progress(
+                ProgressUpdate(
+                    "resources", "Checking resources", completed=0, total=0, finished=True
+                )
+            )
         return counts
 
     async def _promote_external_files(self, course: Course) -> None:

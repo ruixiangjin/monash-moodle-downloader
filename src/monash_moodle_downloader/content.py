@@ -33,6 +33,7 @@ from monash_moodle_downloader.models import (
     Section,
     SyncManifest,
 )
+from monash_moodle_downloader.progress import ProgressCallback, ProgressUpdate, ignore_progress
 
 WEEK_PATTERN = re.compile(r"^\s*Week\s+(\d+)\b", re.IGNORECASE)
 MEDIA_EXTENSIONS = {
@@ -96,6 +97,7 @@ class CourseContentScanner:
         week: int | None = None,
         weeks: Iterable[int] | None = None,
         general: bool = False,
+        progress: ProgressCallback = ignore_progress,
     ) -> SyncManifest:
         """Scan course pages and return a manifest without downloading attachment bodies."""
         selected = select_sections(
@@ -108,15 +110,51 @@ class CourseContentScanner:
         for section in selected:
             page_groups[self._section_page_url(course, section)].append(section)
 
-        for page_url, sections in page_groups.items():
+        page_total = len(page_groups)
+        progress(ProgressUpdate("pages", "Reading Moodle pages", completed=0, total=page_total))
+        for page_number, (page_url, sections) in enumerate(page_groups.items(), 1):
             html = await self._get_html(page_url)
             soup = BeautifulSoup(html, "lxml")
             for section in sections:
                 self._parse_section(soup, section)
+            progress(
+                ProgressUpdate(
+                    "pages",
+                    "Reading Moodle pages",
+                    completed=page_number,
+                    total=page_total,
+                    finished=page_number == page_total,
+                )
+            )
+        if page_total == 0:
+            progress(
+                ProgressUpdate("pages", "Reading Moodle pages", completed=0, total=0, finished=True)
+            )
 
+        activity_total = sum(len(section.activities) for section in selected)
+        progress(
+            ProgressUpdate("activities", "Reading activities", completed=0, total=activity_total)
+        )
+        activity_number = 0
         for section in selected:
             for activity in section.activities:
                 await self._enrich_activity(activity)
+                activity_number += 1
+                progress(
+                    ProgressUpdate(
+                        "activities",
+                        "Reading activities",
+                        completed=activity_number,
+                        total=activity_total,
+                        finished=activity_number == activity_total,
+                    )
+                )
+        if activity_total == 0:
+            progress(
+                ProgressUpdate(
+                    "activities", "Reading activities", completed=0, total=0, finished=True
+                )
+            )
 
         deduplicate_activity_text(selected)
         course.sections = selected

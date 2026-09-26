@@ -6,6 +6,10 @@ A Python command-line tool that saves authorised Monash Moodle course text and n
 offline study. It combines Moodle AJAX course data with browser-readable pages, so it does not
 depend on a Moodle REST token or one fixed course layout.
 
+Program-written menus, progress, and output labels are in English. The browser requests
+Australian English (`en-AU`); Moodle course titles and text keep their source language.
+The Simplified Chinese README explains the same commands, without changing runtime language.
+
 ## What it saves
 
 - Week headings and useful course, Page, Text and media, and Assignment text as Markdown.
@@ -57,15 +61,17 @@ after login succeeds.
 
 The menu provides these choices:
 
-1. Incrementally update every current (not removed-from-view) course.
-2. Select one current or removed-from-view course, then update the entire course.
-3. Select one course, then enter one or more available Weeks such as `3`, `3-5`, or `3,7-8`.
-4. Select one course, then update only General content that sits outside all Week sections.
+1. Incrementally synchronise every current (not removed-from-view) course.
+2. Select one current or removed-from-view course, then synchronise the entire course.
+3. Select one course, then enter one or more available Weeks such as `3`, `3-5`, `3,7-8`,
+   or `3，7～8`.
+4. Select one course, then synchronise only General content outside all Week sections.
 
 The menu performs the same incremental sync as the command-line options. It does not automatically
 include removed-from-view courses in the “all current courses” operation. It reads each course's
 actual Week list before accepting a selection, supports Week 0 when present, and stays open after
-every operation until you explicitly choose `0 Exit` from the main menu.
+every operation until you explicitly choose `0 Exit` from the main menu. The `scan` and `sync`
+commands also accept `--week 0` when that Week exists in the course.
 
 General can contain assessment information, assignments, course information, or other material that
 Moodle places outside the teaching Weeks. An assignment placed inside a Week remains part of that
@@ -126,6 +132,11 @@ uses remote metadata before requesting the file body:
 
 Each sync prints a summary for downloaded, unchanged, skipped-media, unsupported, missing, and
 failed resources. The generated Markdown links point to downloaded files using relative paths.
+
+During scans and syncs, interactive terminals keep progress visible while loading courses, reading
+pages and activities, checking external file links and resources, and writing output. Known totals
+show item counts; redirected output uses plain English progress lines. An `--all` sync stops at the
+first course failure; output already completed for earlier courses remains available.
 
 ## Privacy and repository safety
 

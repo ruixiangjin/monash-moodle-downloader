@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from monash_moodle_downloader.content import week_number
 from monash_moodle_downloader.models import Section
 
-WEEK_ITEM_PATTERN = re.compile(r"^(\d+)(?:[-~～](\d+))?$")
+WEEK_ITEM_PATTERN = re.compile(r"^(\d+)(?:-(\d+))?$")
+SELECTION_TRANSLATION = str.maketrans("，、;；～~－﹣–—−", ",,,,-------")
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +50,7 @@ def format_week_ranges(numbers: Iterable[int]) -> str:
 
 def parse_week_selection(value: str, available: Iterable[int]) -> list[int]:
     """Parse single Weeks, ranges, and comma-separated combinations."""
-    normalised = re.sub(r"\s+", "", value).replace("，", ",")
+    normalised = re.sub(r"\s+", "", value.translate(SELECTION_TRANSLATION))
     if not normalised:
         raise ValueError("Enter at least one Week number, or `b` to go back.")
 

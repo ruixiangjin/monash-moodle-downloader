@@ -34,6 +34,8 @@ def test_available_weeks_uses_visible_root_titles_and_supports_zero() -> None:
         ("3～5", [3, 4, 5]),
         ("3, 4-5, 3", [3, 4, 5]),
         ("3，7-8", [3, 7, 8]),
+        ("3、7－8", [3, 7, 8]),
+        ("3；7—8", [3, 7, 8]),
         ("0-1", [0, 1]),
     ],
 )

@@ -22,6 +22,7 @@ from monash_moodle_downloader.models import (
     Section,
     SyncManifest,
 )
+from monash_moodle_downloader.progress import ProgressUpdate
 
 
 async def allow_test_url(_url: str) -> None:
@@ -72,7 +73,8 @@ async def test_download_cache_and_missing_local_file_recovery(tmp_path: Path) ->
             )
             manifest = manifest_with_resource(source)
 
-            first = await downloader.sync(manifest)
+            updates: list[ProgressUpdate] = []
+            first = await downloader.sync(manifest, progress=updates.append)
             resource = manifest.course.sections[0].activities[0].resources[0]
             assert resource.local_path is not None
             destination = tmp_path / "downloads" / "FIT0000 Example Unit" / resource.local_path
@@ -80,6 +82,13 @@ async def test_download_cache_and_missing_local_file_recovery(tmp_path: Path) ->
             destination.unlink()
             third = await downloader.sync(manifest)
 
+    assert any(
+        update.phase == "resources"
+        and update.completed == 1
+        and update.total == 1
+        and update.finished
+        for update in updates
+    )
     assert first.downloaded == 1
     assert second.unchanged == 1
     assert third.downloaded == 1

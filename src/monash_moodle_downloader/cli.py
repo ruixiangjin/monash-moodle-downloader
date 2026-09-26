@@ -16,6 +16,13 @@ from monash_moodle_downloader.errors import MmdError
 from monash_moodle_downloader.models import Course
 from monash_moodle_downloader.moodle import MoodleAjaxClient
 from monash_moodle_downloader.output import write_scan_output
+from monash_moodle_downloader.progress import (
+    ProgressCallback,
+    ProgressUpdate,
+    TerminalProgress,
+    ignore_progress,
+    scoped_progress,
+)
 from monash_moodle_downloader.session import BrowserSession
 from monash_moodle_downloader.settings import Settings
 from monash_moodle_downloader.weeks import (
@@ -128,7 +135,17 @@ async def _menu() -> None:
     async with BrowserSession(settings, headless=True) as session:
         await session.ensure_authenticated()
         client = MoodleAjaxClient(session.page, base_url=settings.moodle_base_url)
-        courses_to_show = await client.list_courses(include_removed=True)
+        with TerminalProgress(console) as display:
+            display.update(ProgressUpdate("course-list", "Loading Moodle courses"))
+            courses_to_show = await client.list_courses(include_removed=True)
+            display.update(
+                ProgressUpdate(
+                    "course-list",
+                    "Loading Moodle courses",
+                    completed=len(courses_to_show),
+                    finished=True,
+                )
+            )
         scanner = CourseContentScanner(session.page, base_url=settings.moodle_base_url)
 
         with ResourceCache(settings.database) as cache:
@@ -139,20 +156,40 @@ async def _menu() -> None:
             )
             async with downloader:
 
+                async def load_course(course: Course) -> Course:
+                    with TerminalProgress(console) as display:
+                        display.update(
+                            ProgressUpdate(
+                                f"course-state:{course.id}",
+                                f"Loading {course.code} course structure",
+                            )
+                        )
+                        populated = await client.get_course_state(course)
+                        display.update(
+                            ProgressUpdate(
+                                f"course-state:{course.id}",
+                                f"Loading {course.code} course structure",
+                                finished=True,
+                            )
+                        )
+                    return populated
+
                 async def sync_course(course: Course, scope: MenuScope) -> None:
-                    await _sync_populated_course(
-                        course,
-                        weeks=scope if isinstance(scope, list) else None,
-                        general=scope == "general",
-                        scanner=scanner,
-                        downloader=downloader,
-                        output_root=settings.output_root,
-                        refresh=False,
-                    )
+                    with TerminalProgress(console) as display:
+                        await _sync_populated_course(
+                            course,
+                            weeks=scope if isinstance(scope, list) else None,
+                            general=scope == "general",
+                            scanner=scanner,
+                            downloader=downloader,
+                            output_root=settings.output_root,
+                            refresh=False,
+                            progress=display.update,
+                        )
 
                 await _menu_loop(
                     courses_to_show,
-                    load_course=client.get_course_state,
+                    load_course=load_course,
                     sync_course=sync_course,
                 )
 
@@ -179,7 +216,7 @@ async def _menu_loop(
     while True:
         selection = _prompt_course_selection(courses_to_show)
         if selection is None:
-            console.print("Exiting Moodle Downloader.")
+            console.print("Moodle Downloader has exited.")
             return
         try:
             if isinstance(selection, str):
@@ -207,8 +244,8 @@ async def _menu_loop(
 def _prompt_course_selection(courses_to_show: list[Course]) -> Course | str | None:
     current = [course for course in courses_to_show if not course.removed_from_view]
     removed = [course for course in courses_to_show if course.removed_from_view]
-    console.print("\n[bold]What would you like to update?[/bold]")
-    console.print("  [cyan]1[/cyan]  All current courses")
+    console.print("\n[bold]What would you like to synchronise?[/bold]")
+    console.print("  [cyan]1[/cyan]  Synchronise all current courses")
     numbered: dict[int, Course] = {}
     next_number = 2
     console.print("\n[bold]Current courses[/bold]")
@@ -236,9 +273,9 @@ def _prompt_course_selection(courses_to_show: list[Course]) -> Course | str | No
 
 def _prompt_course_action(course: Course) -> str | None:
     console.print(f"\n[bold]{course.code} — {course.name}[/bold]")
-    console.print("  [cyan]1[/cyan]  Update the entire course")
-    console.print("  [cyan]2[/cyan]  Update one or more specific Weeks")
-    console.print("  [cyan]3[/cyan]  Update General (non-Week content)")
+    console.print("  [cyan]1[/cyan]  Synchronise the entire course")
+    console.print("  [cyan]2[/cyan]  Synchronise one or more specific Weeks")
+    console.print("  [cyan]3[/cyan]  Synchronise General (non-Week content)")
     console.print("  [cyan]0[/cyan]  Back to course selection")
     while True:
         choice = typer.prompt("Enter a number", type=int)
@@ -263,7 +300,7 @@ def _prompt_weeks(course: Course) -> list[int] | None:
         console.print(f"  [cyan]{option.number}[/cyan]  {option.title}")
     available_numbers = [option.number for option in options]
     console.print(f"Available: {format_week_ranges(available_numbers)}")
-    console.print("Examples: 3, 3-5, 3,7-8. Enter b to go back.")
+    console.print("Examples: 3, 3-5, 3,7-8, or 3，7～8. Enter b to go back.")
     while True:
         value = typer.prompt("Enter Week selection", type=str)
         if value.strip().casefold() == "b":
@@ -278,7 +315,7 @@ def _prompt_weeks(course: Course) -> list[int] | None:
 @app.command()
 def scan(
     course: Annotated[str, typer.Option("--course", "-c", help="Course code or Moodle ID.")],
-    week: Annotated[int | None, typer.Option("--week", min=1)] = None,
+    week: Annotated[int | None, typer.Option("--week", min=0)] = None,
     output: Annotated[Path | None, typer.Option("--output", file_okay=False)] = None,
 ) -> None:
     """Inspect one course without downloading its resources."""
@@ -288,15 +325,23 @@ def scan(
 async def _scan(course_selector: str, *, week: int | None, output: Path | None) -> None:
     settings = Settings.default()
     output_root = output if output is not None else settings.output_root
-    async with BrowserSession(settings, headless=True) as session:
-        await session.ensure_authenticated()
-        client = MoodleAjaxClient(session.page, base_url=settings.moodle_base_url)
-        course = await client.resolve_course(course_selector)
-        course = await client.get_course_state(course)
-        scanner = CourseContentScanner(session.page, base_url=settings.moodle_base_url)
-        manifest = await scanner.scan(course, week=week)
-
-    destination = write_scan_output(manifest, output_root, on_warning=_print_output_warning)
+    with TerminalProgress(console) as display:
+        display.update(ProgressUpdate("session", "Opening Moodle session"))
+        async with BrowserSession(settings, headless=True) as session:
+            await session.ensure_authenticated()
+            display.update(ProgressUpdate("session", "Opening Moodle session", finished=True))
+            client = MoodleAjaxClient(session.page, base_url=settings.moodle_base_url)
+            display.update(ProgressUpdate("course-state", "Loading course structure"))
+            course = await client.resolve_course(course_selector)
+            course = await client.get_course_state(course)
+            display.update(
+                ProgressUpdate("course-state", "Loading course structure", finished=True)
+            )
+            scanner = CourseContentScanner(session.page, base_url=settings.moodle_base_url)
+            manifest = await scanner.scan(course, week=week, progress=display.update)
+        display.update(ProgressUpdate("output", "Writing course files"))
+        destination = write_scan_output(manifest, output_root, on_warning=_print_output_warning)
+        display.update(ProgressUpdate("output", "Writing course files", finished=True))
     activities = [
         activity for section in manifest.course.sections for activity in section.activities
     ]
@@ -324,7 +369,7 @@ def sync(
             help="Synchronise every current course, excluding Remove from view.",
         ),
     ] = False,
-    week: Annotated[int | None, typer.Option("--week", min=1)] = None,
+    week: Annotated[int | None, typer.Option("--week", min=0)] = None,
     refresh: Annotated[
         bool,
         typer.Option("--refresh", help="Ignore cached remote metadata."),
@@ -358,30 +403,83 @@ async def _sync(
 ) -> None:
     settings = Settings.default()
     output_root = output if output is not None else settings.output_root
-    async with BrowserSession(settings, headless=True) as session:
-        await session.ensure_authenticated()
-        client = MoodleAjaxClient(session.page, base_url=settings.moodle_base_url)
-        if all_courses:
-            courses_to_sync = await client.list_courses(include_removed=False)
-        else:
-            assert course_selector is not None
-            courses_to_sync = [await client.resolve_course(course_selector)]
+    with TerminalProgress(console) as display:
+        display.update(ProgressUpdate("session", "Opening Moodle session"))
+        async with BrowserSession(settings, headless=True) as session:
+            await session.ensure_authenticated()
+            display.update(ProgressUpdate("session", "Opening Moodle session", finished=True))
+            client = MoodleAjaxClient(session.page, base_url=settings.moodle_base_url)
+            display.update(ProgressUpdate("course-list", "Loading Moodle courses"))
+            if all_courses:
+                courses_to_sync = await client.list_courses(include_removed=False)
+            else:
+                assert course_selector is not None
+                courses_to_sync = [await client.resolve_course(course_selector)]
+            display.update(
+                ProgressUpdate(
+                    "course-list",
+                    "Loading Moodle courses",
+                    completed=len(courses_to_sync),
+                    finished=True,
+                )
+            )
 
-        with ResourceCache(settings.database) as cache:
-            downloader = await ResourceDownloader.from_page(session.page, cache, output_root)
-            async with downloader:
-                for course in courses_to_sync:
-                    populated = await client.get_course_state(course)
-                    scanner = CourseContentScanner(session.page, base_url=settings.moodle_base_url)
-                    await _sync_populated_course(
-                        populated,
-                        weeks=[week] if week is not None else None,
-                        general=False,
-                        scanner=scanner,
-                        downloader=downloader,
-                        output_root=output_root,
-                        refresh=refresh,
+            with ResourceCache(settings.database) as cache:
+                downloader = await ResourceDownloader.from_page(session.page, cache, output_root)
+                async with downloader:
+                    course_total = len(courses_to_sync)
+                    display.update(
+                        ProgressUpdate(
+                            "courses", "Synchronising courses", completed=0, total=course_total
+                        )
                     )
+                    for course_number, course in enumerate(courses_to_sync, 1):
+                        display.update(
+                            ProgressUpdate(
+                                f"course-state:{course.id}",
+                                f"Loading {course.code} course structure",
+                            )
+                        )
+                        populated = await client.get_course_state(course)
+                        display.update(
+                            ProgressUpdate(
+                                f"course-state:{course.id}",
+                                f"Loading {course.code} course structure",
+                                finished=True,
+                            )
+                        )
+                        scanner = CourseContentScanner(
+                            session.page, base_url=settings.moodle_base_url
+                        )
+                        await _sync_populated_course(
+                            populated,
+                            weeks=[week] if week is not None else None,
+                            general=False,
+                            scanner=scanner,
+                            downloader=downloader,
+                            output_root=output_root,
+                            refresh=refresh,
+                            progress=scoped_progress(display.update, str(course.id)),
+                        )
+                        display.update(
+                            ProgressUpdate(
+                                "courses",
+                                "Synchronising courses",
+                                completed=course_number,
+                                total=course_total,
+                                finished=course_number == course_total,
+                            )
+                        )
+                    if course_total == 0:
+                        display.update(
+                            ProgressUpdate(
+                                "courses",
+                                "Synchronising courses",
+                                completed=0,
+                                total=0,
+                                finished=True,
+                            )
+                        )
 
 
 async def _sync_populated_course(
@@ -393,10 +491,13 @@ async def _sync_populated_course(
     downloader: ResourceDownloader,
     output_root: Path,
     refresh: bool,
+    progress: ProgressCallback = ignore_progress,
 ) -> None:
-    manifest = await scanner.scan(course, weeks=weeks, general=general)
-    counts = await downloader.sync(manifest, refresh=refresh)
+    manifest = await scanner.scan(course, weeks=weeks, general=general, progress=progress)
+    counts = await downloader.sync(manifest, refresh=refresh, progress=progress)
+    progress(ProgressUpdate("output", "Writing course files"))
     destination = write_scan_output(manifest, output_root, on_warning=_print_output_warning)
+    progress(ProgressUpdate("output", "Writing course files", finished=True))
     _print_sync_result(course.code, destination, counts)
 
 
@@ -405,11 +506,11 @@ def _print_output_warning(message: str) -> None:
 
 
 def _print_sync_result(code: str, destination: Path, counts: SyncCounts) -> None:
-    console.print(f"[green]Sync complete:[/green] {code}")
+    console.print(f"[green]Synchronised course:[/green] {code}")
     console.print(f"Downloaded: {counts.downloaded}")
     console.print(f"Unchanged: {counts.unchanged}")
     console.print(f"Skipped media: {counts.skipped_media}")
     console.print(f"Unsupported pages: {counts.unsupported}")
     console.print(f"Missing remotely: {counts.missing_remote}")
     console.print(f"Failed: {counts.failed}")
-    console.print(f"Output: {destination}")
+    console.print(f"Course output: {destination}")
